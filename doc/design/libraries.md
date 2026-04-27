@@ -12,7 +12,6 @@
 | *libbitcoin_node*        | P2P and RPC server functionality used by *bitcoind* and *bitcoin-qt* executables. |
 | *libbitcoin_util*        | Home for common functionality shared by different executables and libraries. Similar to *libbitcoin_common*, but lower-level (see [Dependencies](#dependencies)). |
 | *libbitcoin_wallet*      | Wallet functionality used by *bitcoind* and *bitcoin-wallet* executables. |
-| *libbitcoin_wallet_tool* | Lower-level wallet functionality used by *bitcoin-wallet* executable. |
 | *libbitcoin_zmq*         | [ZeroMQ](../zmq.md) functionality used by *bitcoind* and *bitcoin-qt* executables. |
 
 ## Conventions
@@ -49,26 +48,20 @@ bitcoin-qt[bitcoin-qt]-->libbitcoinqt;
 bitcoin-qt[bitcoin-qt]-->libbitcoin_wallet;
 
 bitcoin-wallet[bitcoin-wallet]-->libbitcoin_wallet;
-bitcoin-wallet[bitcoin-wallet]-->libbitcoin_wallet_tool;
 
-libbitcoin_cli-->libbitcoin_util;
 libbitcoin_cli-->libbitcoin_common;
 
 libbitcoin_consensus-->libbitcoin_crypto;
 
 libbitcoin_common-->libbitcoin_consensus;
-libbitcoin_common-->libbitcoin_crypto;
 libbitcoin_common-->libbitcoin_util;
 
 libbitcoin_kernel-->libbitcoin_consensus;
 libbitcoin_kernel-->libbitcoin_crypto;
 libbitcoin_kernel-->libbitcoin_util;
 
-libbitcoin_node-->libbitcoin_consensus;
-libbitcoin_node-->libbitcoin_crypto;
 libbitcoin_node-->libbitcoin_kernel;
 libbitcoin_node-->libbitcoin_common;
-libbitcoin_node-->libbitcoin_util;
 
 libbitcoinqt-->libbitcoin_common;
 libbitcoinqt-->libbitcoin_util;
@@ -76,18 +69,13 @@ libbitcoinqt-->libbitcoin_util;
 libbitcoin_util-->libbitcoin_crypto;
 
 libbitcoin_wallet-->libbitcoin_common;
-libbitcoin_wallet-->libbitcoin_crypto;
-libbitcoin_wallet-->libbitcoin_util;
-
-libbitcoin_wallet_tool-->libbitcoin_wallet;
-libbitcoin_wallet_tool-->libbitcoin_util;
 
 classDef bold stroke-width:2px, font-weight:bold, font-size: smaller;
 class bitcoin-qt,bitcoind,bitcoin-cli,bitcoin-wallet bold
 ```
 </td></tr><tr><td>
 
-**Dependency graph**. Arrows show linker symbol dependencies. *Crypto* lib depends on nothing. *Util* lib is depended on by everything. *Kernel* lib depends only on consensus, crypto, and util.
+**Dependency graph**. Arrows show allowed linker symbol dependencies. Dependencies are transitive, so a library may also use symbols from any library reachable by following the arrows. *Crypto* lib depends on nothing. *Util* lib is depended on by everything. *Kernel* lib depends only on consensus, crypto, and util.
 
 </td></tr></table>
 
