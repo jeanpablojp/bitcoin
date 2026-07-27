@@ -91,6 +91,10 @@ static ScriptErrorDesc script_errors[]={
     {SCRIPT_ERR_WITNESS_UNEXPECTED, "WITNESS_UNEXPECTED"},
     {SCRIPT_ERR_WITNESS_PUBKEYTYPE, "WITNESS_PUBKEYTYPE"},
     {SCRIPT_ERR_TAPSCRIPT_EMPTY_PUBKEY, "TAPSCRIPT_EMPTY_PUBKEY"},
+    {SCRIPT_ERR_SCHNORR_SIG, "SCHNORR_SIG"},
+    {SCRIPT_ERR_TAPROOT_WRONG_CONTROL_SIZE, "TAPROOT_WRONG_CONTROL_SIZE"},
+    {SCRIPT_ERR_DISCOURAGE_UPGRADABLE_TAPROOT_VERSION, "DISCOURAGE_UPGRADABLE_TAPROOT_VERSION"},
+    {SCRIPT_ERR_P2MR_WRONG_CONTROL_BYTE, "P2MR_WRONG_CONTROL_BYTE"},
     {SCRIPT_ERR_OP_CODESEPARATOR, "OP_CODESEPARATOR"},
     {SCRIPT_ERR_SIG_FINDANDDELETE, "SIG_FINDANDDELETE"},
     {SCRIPT_ERR_SCRIPTNUM, "SCRIPTNUM"}
@@ -1420,6 +1424,227 @@ BOOST_AUTO_TEST_CASE(sign_paytoanchor)
     curr.vin.emplace_back(COutPoint{prev.GetHash(), 0});
 
     BOOST_CHECK(SignSignature(keystore, CTransaction(prev), curr, 0, SIGHASH_ALL, sig_data));
+}
+
+/** BIP 360 P2MR spending, against the Script Validation section of the spec. */
+BOOST_AUTO_TEST_CASE(script_p2mr)
+{
+    KeyData keys;
+    const XOnlyPubKey xpk{keys.pubkey0C};
+
+    // Two-leaf script tree: leaf A = <xonly pubkey> OP_CHECKSIG, leaf B = OP_RETURN.
+    const CScript leaf_a = CScript() << ToByteVector(xpk) << OP_CHECKSIG;
+    const CScript leaf_b = CScript() << OP_RETURN;
+    const uint256 hash_a = ComputeTapleafHash(TAPROOT_LEAF_TAPSCRIPT, leaf_a);
+    const uint256 hash_b = ComputeTapleafHash(TAPROOT_LEAF_TAPSCRIPT, leaf_b);
+    const uint256 root = ComputeTapbranchHash(hash_a, hash_b);
+
+    const CScript spk = CScript() << OP_2 << ToByteVector(root);
+    const CAmount amount{10000};
+    const CTransaction credit_tx{BuildCreditingTransaction(spk, amount)};
+    CMutableTransaction spend_tx = BuildSpendingTransaction(CScript(), CScriptWitness(), credit_tx);
+    // Mark the input as witness-bearing so that Init() detects the P2MR spend
+    // and precomputes the BIP 341 sighash midstate.
+    spend_tx.vin[0].scriptWitness.stack.push_back({});
+
+    PrecomputedTransactionData txdata;
+    txdata.Init(spend_tx, {credit_tx.vout[0]});
+    const MutableTransactionSignatureChecker checker{&spend_tx, 0, amount, txdata, MissingDataBehavior::FAIL};
+
+    const unsigned char control_byte{TAPROOT_LEAF_TAPSCRIPT | 1}; // low bit must be 1
+    const std::vector<unsigned char> leaf_a_bytes(leaf_a.begin(), leaf_a.end());
+    std::vector<unsigned char> control{control_byte};
+    control.insert(control.end(), hash_b.begin(), hash_b.end());
+
+    const script_verify_flags base_flags{SCRIPT_VERIFY_P2SH | SCRIPT_VERIFY_WITNESS | SCRIPT_VERIFY_TAPROOT};
+    const script_verify_flags p2mr_flags{base_flags | SCRIPT_VERIFY_P2MR};
+    ScriptError err;
+
+    const auto sign_leaf_a = [&](bool annex_present, const uint256& annex_hash) {
+        ScriptExecutionData execdata;
+        execdata.m_annex_init = true;
+        execdata.m_annex_present = annex_present;
+        if (annex_present) execdata.m_annex_hash = annex_hash;
+        execdata.m_tapleaf_hash_init = true;
+        execdata.m_tapleaf_hash = hash_a;
+        execdata.m_codeseparator_pos_init = true;
+        execdata.m_codeseparator_pos = 0xFFFFFFFF;
+        uint256 sighash;
+        BOOST_REQUIRE(SignatureHashSchnorr(sighash, execdata, spend_tx, 0, SIGHASH_DEFAULT, SigVersion::TAPSCRIPT, txdata, MissingDataBehavior::FAIL));
+        std::vector<unsigned char> sig(64);
+        BOOST_REQUIRE(keys.key0C.SignSchnorr(sighash, sig, nullptr, uint256()));
+        return sig;
+    };
+
+    // Valid spend through leaf A.
+    {
+        CScriptWitness w;
+        w.stack = {sign_leaf_a(false, uint256()), leaf_a_bytes, control};
+        BOOST_CHECK(VerifyScript(CScript(), spk, &w, p2mr_flags, checker, &err));
+        BOOST_CHECK_MESSAGE(err == SCRIPT_ERR_OK, ScriptErrorString(err));
+    }
+
+    // Without SCRIPT_VERIFY_P2MR the output stays unencumbered.
+    {
+        CScriptWitness w;
+        w.stack = {{0x01}};
+        BOOST_CHECK(VerifyScript(CScript(), spk, &w, base_flags, checker, &err));
+    }
+
+    // Corrupted signature.
+    {
+        auto sig = sign_leaf_a(false, uint256());
+        sig[10] ^= 1;
+        CScriptWitness w;
+        w.stack = {sig, leaf_a_bytes, control};
+        BOOST_CHECK(!VerifyScript(CScript(), spk, &w, p2mr_flags, checker, &err));
+        BOOST_CHECK_EQUAL(FormatScriptError(err), FormatScriptError(SCRIPT_ERR_SCHNORR_SIG));
+    }
+
+    // Control block of invalid length.
+    {
+        auto bad_control = control;
+        bad_control.push_back(0x00);
+        CScriptWitness w;
+        w.stack = {sign_leaf_a(false, uint256()), leaf_a_bytes, bad_control};
+        BOOST_CHECK(!VerifyScript(CScript(), spk, &w, p2mr_flags, checker, &err));
+        BOOST_CHECK_EQUAL(FormatScriptError(err), FormatScriptError(SCRIPT_ERR_TAPROOT_WRONG_CONTROL_SIZE));
+    }
+
+    // Wrong Merkle path.
+    {
+        auto bad_control = control;
+        bad_control[5] ^= 1;
+        CScriptWitness w;
+        w.stack = {sign_leaf_a(false, uint256()), leaf_a_bytes, bad_control};
+        BOOST_CHECK(!VerifyScript(CScript(), spk, &w, p2mr_flags, checker, &err));
+        BOOST_CHECK_EQUAL(FormatScriptError(err), FormatScriptError(SCRIPT_ERR_WITNESS_PROGRAM_MISMATCH));
+    }
+
+    // Control byte with the low bit unset.
+    {
+        auto bad_control = control;
+        bad_control[0] = TAPROOT_LEAF_TAPSCRIPT;
+        CScriptWitness w;
+        w.stack = {sign_leaf_a(false, uint256()), leaf_a_bytes, bad_control};
+        BOOST_CHECK(!VerifyScript(CScript(), spk, &w, p2mr_flags, checker, &err));
+        BOOST_CHECK_EQUAL(FormatScriptError(err), FormatScriptError(SCRIPT_ERR_P2MR_WRONG_CONTROL_BYTE));
+    }
+
+    // Fewer than two elements after annex handling.
+    {
+        CScriptWitness w;
+        w.stack = {control};
+        BOOST_CHECK(!VerifyScript(CScript(), spk, &w, p2mr_flags, checker, &err));
+        BOOST_CHECK_EQUAL(FormatScriptError(err), FormatScriptError(SCRIPT_ERR_WITNESS_PROGRAM_MISMATCH));
+    }
+
+    // A two-element stack whose last element carries the annex tag is invalid.
+    {
+        CScriptWitness w;
+        w.stack = {leaf_a_bytes, {ANNEX_TAG}};
+        BOOST_CHECK(!VerifyScript(CScript(), spk, &w, p2mr_flags, checker, &err));
+        BOOST_CHECK_EQUAL(FormatScriptError(err), FormatScriptError(SCRIPT_ERR_WITNESS_PROGRAM_MISMATCH));
+    }
+
+    // Annex-covered spend: valid when signed over the annex, invalid otherwise.
+    {
+        const std::vector<unsigned char> annex{ANNEX_TAG, 0xde, 0xad};
+        const uint256 annex_hash{(HashWriter{} << annex).GetSHA256()};
+        CScriptWitness w;
+        w.stack = {sign_leaf_a(true, annex_hash), leaf_a_bytes, control, annex};
+        BOOST_CHECK(VerifyScript(CScript(), spk, &w, p2mr_flags, checker, &err));
+        BOOST_CHECK_MESSAGE(err == SCRIPT_ERR_OK, ScriptErrorString(err));
+
+        w.stack = {sign_leaf_a(false, uint256()), leaf_a_bytes, control, annex};
+        BOOST_CHECK(!VerifyScript(CScript(), spk, &w, p2mr_flags, checker, &err));
+        BOOST_CHECK_EQUAL(FormatScriptError(err), FormatScriptError(SCRIPT_ERR_SCHNORR_SIG));
+    }
+
+    // Depth-zero tree: anyone-can-spend once the leaf script preimage is known.
+    // No signature is required and the leaf script is not executed.
+    {
+        const CScript spk_d0 = CScript() << OP_2 << ToByteVector(hash_a);
+        CScriptWitness w;
+        w.stack = {leaf_a_bytes, {control_byte}};
+        BOOST_CHECK(VerifyScript(CScript(), spk_d0, &w, p2mr_flags, checker, &err));
+        BOOST_CHECK_MESSAGE(err == SCRIPT_ERR_OK, ScriptErrorString(err));
+    }
+
+    // Unknown leaf version stays unencumbered, but is discouraged by policy.
+    {
+        const uint256 hash_unk = ComputeTapleafHash(0xe0, leaf_a);
+        const CScript spk_unk = CScript() << OP_2 << ToByteVector(ComputeTapbranchHash(hash_unk, hash_b));
+        std::vector<unsigned char> control_unk{0xe0 | 1};
+        control_unk.insert(control_unk.end(), hash_b.begin(), hash_b.end());
+        CScriptWitness w;
+        w.stack = {leaf_a_bytes, control_unk};
+        BOOST_CHECK(VerifyScript(CScript(), spk_unk, &w, p2mr_flags, checker, &err));
+        BOOST_CHECK(!VerifyScript(CScript(), spk_unk, &w, p2mr_flags | SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_TAPROOT_VERSION, checker, &err));
+        BOOST_CHECK_EQUAL(FormatScriptError(err), FormatScriptError(SCRIPT_ERR_DISCOURAGE_UPGRADABLE_TAPROOT_VERSION));
+    }
+
+    // Three-leaf tree: spend leaf A at depth 2 (two-node Merkle path).
+    {
+        const CScript leaf_c = CScript() << OP_TRUE;
+        const uint256 hash_c = ComputeTapleafHash(TAPROOT_LEAF_TAPSCRIPT, leaf_c);
+        const uint256 root2 = ComputeTapbranchHash(ComputeTapbranchHash(hash_a, hash_b), hash_c);
+        const CScript spk2 = CScript() << OP_2 << ToByteVector(root2);
+        const CTransaction credit2{BuildCreditingTransaction(spk2, amount)};
+        CMutableTransaction spend2 = BuildSpendingTransaction(CScript(), CScriptWitness(), credit2);
+        spend2.vin[0].scriptWitness.stack.push_back({});
+        PrecomputedTransactionData txdata2;
+        txdata2.Init(spend2, {credit2.vout[0]});
+        const MutableTransactionSignatureChecker checker2{&spend2, 0, amount, txdata2, MissingDataBehavior::FAIL};
+
+        ScriptExecutionData execdata;
+        execdata.m_annex_init = true;
+        execdata.m_annex_present = false;
+        execdata.m_tapleaf_hash_init = true;
+        execdata.m_tapleaf_hash = hash_a;
+        execdata.m_codeseparator_pos_init = true;
+        execdata.m_codeseparator_pos = 0xFFFFFFFF;
+        uint256 sighash;
+        BOOST_REQUIRE(SignatureHashSchnorr(sighash, execdata, spend2, 0, SIGHASH_DEFAULT, SigVersion::TAPSCRIPT, txdata2, MissingDataBehavior::FAIL));
+        std::vector<unsigned char> sig(64);
+        BOOST_REQUIRE(keys.key0C.SignSchnorr(sighash, sig, nullptr, uint256()));
+
+        std::vector<unsigned char> control2{control_byte};
+        control2.insert(control2.end(), hash_b.begin(), hash_b.end());
+        control2.insert(control2.end(), hash_c.begin(), hash_c.end());
+        CScriptWitness w;
+        w.stack = {sig, leaf_a_bytes, control2};
+        BOOST_CHECK(VerifyScript(CScript(), spk2, &w, p2mr_flags, checker2, &err));
+        BOOST_CHECK_MESSAGE(err == SCRIPT_ERR_OK, ScriptErrorString(err));
+    }
+
+    // A Merkle path deeper than 128 nodes is invalid.
+    {
+        std::vector<unsigned char> control129{control_byte};
+        control129.resize(1 + 32 * 129, 0x00);
+        CScriptWitness w;
+        w.stack = {leaf_a_bytes, control129};
+        BOOST_CHECK(!VerifyScript(CScript(), spk, &w, p2mr_flags, checker, &err));
+        BOOST_CHECK_EQUAL(FormatScriptError(err), FormatScriptError(SCRIPT_ERR_TAPROOT_WRONG_CONTROL_SIZE));
+    }
+
+    // Depth-zero spend with an annex: the annex is dropped, then m = 0 applies.
+    {
+        const CScript spk_d0 = CScript() << OP_2 << ToByteVector(hash_a);
+        CScriptWitness w;
+        w.stack = {leaf_a_bytes, {control_byte}, {ANNEX_TAG, 0x01}};
+        BOOST_CHECK(VerifyScript(CScript(), spk_d0, &w, p2mr_flags, checker, &err));
+        BOOST_CHECK_MESSAGE(err == SCRIPT_ERR_OK, ScriptErrorString(err));
+    }
+
+    // Extra initial stack elements are ignored when execution is skipped (m = 0).
+    {
+        const CScript spk_d0 = CScript() << OP_2 << ToByteVector(hash_a);
+        CScriptWitness w;
+        w.stack = {{0xde, 0xad}, leaf_a_bytes, {control_byte}};
+        BOOST_CHECK(VerifyScript(CScript(), spk_d0, &w, p2mr_flags, checker, &err));
+        BOOST_CHECK_MESSAGE(err == SCRIPT_ERR_OK, ScriptErrorString(err));
+    }
 }
 
 BOOST_AUTO_TEST_CASE(script_standard_push)
