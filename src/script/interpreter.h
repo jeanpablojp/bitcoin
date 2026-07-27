@@ -146,6 +146,11 @@ enum class script_verify_flag_name : uint8_t {
     // Making unknown public key versions (in BIP 342 scripts) non-standard
     SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_PUBKEYTYPE,
 
+    // P2MR validation for witness v2 32-byte programs (BIP 360, draft).
+    // The BIP defines no activation parameters, so block validation only
+    // applies this flag on regtest; see GetBlockScriptFlags().
+    SCRIPT_VERIFY_P2MR,
+
     // Constants to point to the highest flag in use. Add new flags above this line.
     //
     SCRIPT_VERIFY_END_MARKER

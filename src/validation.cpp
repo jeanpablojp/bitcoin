@@ -2277,6 +2277,12 @@ script_verify_flags GetBlockScriptFlags(const CBlockIndex& block_index, const Ch
         flags = it->second;
     }
 
+    // P2MR (BIP 360) is a draft with no activation parameters, so its rules
+    // are enforced in block validation only on regtest.
+    if (chainman.GetParams().GetChainType() == ChainType::REGTEST) {
+        flags |= SCRIPT_VERIFY_P2MR;
+    }
+
     // Enforce the DERSIG (BIP66) rule
     if (DeploymentActiveAt(block_index, chainman, Consensus::DEPLOYMENT_DERSIG)) {
         flags |= SCRIPT_VERIFY_DERSIG;
