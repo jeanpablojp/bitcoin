@@ -113,6 +113,8 @@ std::string ScriptErrorString(const ScriptError serror)
             return "OP_IF/NOTIF argument must be minimal in tapscript";
         case SCRIPT_ERR_TAPSCRIPT_EMPTY_PUBKEY:
             return "Empty public key in tapscript";
+        case SCRIPT_ERR_P2MR_WRONG_CONTROL_BYTE:
+            return "P2MR control byte low bit must be set";
         case SCRIPT_ERR_OP_CODESEPARATOR:
             return "Using OP_CODESEPARATOR in non-witness script";
         case SCRIPT_ERR_SIG_FINDANDDELETE:

@@ -1432,6 +1432,11 @@ void PrecomputedTransactionData::Init(const T& txTo, std::vector<CTxOut>&& spent
                 // will fail anyway. Note that this branch may trigger for scriptPubKeys that aren't actually segwit
                 // but in that case validation will fail as SCRIPT_ERR_WITNESS_UNEXPECTED anyway.
                 uses_bip341_taproot = true;
+            } else if (m_spent_outputs_ready && m_spent_outputs[inpos].scriptPubKey.size() == 2 + WITNESS_V2_P2MR_SIZE &&
+                       m_spent_outputs[inpos].scriptPubKey[0] == OP_2) {
+                // BIP360 P2MR spends reuse the BIP341/342 signature message, so they need
+                // the same precomputed data as Taproot spends.
+                uses_bip341_taproot = true;
             } else {
                 // Treat every spend that's not known to native witness v1 as a Witness v0 spend. This branch may
                 // also be taken for unknown witness versions, but it is harmless, and being precise would require
@@ -2010,6 +2015,57 @@ static bool VerifyWitnessProgram(const CScriptWitness& witness, int witversion, 
             }
             return set_success(serror);
         }
+    } else if (witversion == 2 && program.size() == WITNESS_V2_P2MR_SIZE && !is_p2sh) {
+        // BIP360 P2MR: 32-byte non-P2SH witness v2 program (which encodes the Merkle root of a script tree)
+        if (!(flags & SCRIPT_VERIFY_P2MR)) return set_success(serror);
+        if (stack.size() == 0) return set_error(serror, SCRIPT_ERR_WITNESS_PROGRAM_WITNESS_EMPTY);
+        // An annex is only allowed alongside at least a script and a control
+        // block: a two-element stack whose last element carries the annex tag
+        // is invalid.
+        if (stack.size() == 2 && !stack.back().empty() && stack.back()[0] == ANNEX_TAG) {
+            return set_error(serror, SCRIPT_ERR_WITNESS_PROGRAM_MISMATCH);
+        }
+        if (stack.size() >= 3 && !stack.back().empty() && stack.back()[0] == ANNEX_TAG) {
+            // Drop annex (always covered by the signature when present)
+            const valtype& annex = SpanPopBack(stack);
+            execdata.m_annex_hash = (HashWriter{} << annex).GetSHA256();
+            execdata.m_annex_present = true;
+        } else {
+            execdata.m_annex_present = false;
+        }
+        execdata.m_annex_init = true;
+        // There is no key path spend: script and control block are always required.
+        if (stack.size() < 2) return set_error(serror, SCRIPT_ERR_WITNESS_PROGRAM_MISMATCH);
+        const valtype& control = SpanPopBack(stack);
+        const valtype& script = SpanPopBack(stack);
+        if (control.size() < P2MR_CONTROL_BASE_SIZE || control.size() > P2MR_CONTROL_MAX_SIZE || ((control.size() - P2MR_CONTROL_BASE_SIZE) % TAPROOT_CONTROL_NODE_SIZE) != 0) {
+            return set_error(serror, SCRIPT_ERR_TAPROOT_WRONG_CONTROL_SIZE);
+        }
+        // The low bit of the control byte (P2TR's parity bit) is unused and must be 1.
+        if ((control[0] & 1) == 0) {
+            return set_error(serror, SCRIPT_ERR_P2MR_WRONG_CONTROL_BYTE);
+        }
+        execdata.m_tapleaf_hash = ComputeTapleafHash(control[0] & TAPROOT_LEAF_MASK, script);
+        // The witness program is the Merkle root of the script tree, not a
+        // tweaked public key: compare the computed root against it directly.
+        const uint256 merkle_root = ComputeP2MRMerkleRoot(control, execdata.m_tapleaf_hash);
+        if (memcmp(merkle_root.begin(), program.data(), uint256::size()) != 0) {
+            return set_error(serror, SCRIPT_ERR_WITNESS_PROGRAM_MISMATCH);
+        }
+        execdata.m_tapleaf_hash_init = true;
+        // Depth-zero trees are anyone-can-spend: script execution is skipped.
+        if (control.size() == P2MR_CONTROL_BASE_SIZE) return set_success(serror);
+        if ((control[0] & TAPROOT_LEAF_MASK) == TAPROOT_LEAF_TAPSCRIPT) {
+            // Tapscript (leaf version 0xc0), executed under BIP342 rules
+            exec_script = CScript(script.begin(), script.end());
+            execdata.m_validation_weight_left = ::GetSerializeSize(witness.stack) + VALIDATION_WEIGHT_OFFSET;
+            execdata.m_validation_weight_left_init = true;
+            return ExecuteWitnessScript(stack, exec_script, flags, SigVersion::TAPSCRIPT, checker, execdata, serror);
+        }
+        if (flags & SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_TAPROOT_VERSION) {
+            return set_error(serror, SCRIPT_ERR_DISCOURAGE_UPGRADABLE_TAPROOT_VERSION);
+        }
+        return set_success(serror);
     } else if (!is_p2sh && CScript::IsPayToAnchor(witversion, program)) {
         return true;
     } else {
