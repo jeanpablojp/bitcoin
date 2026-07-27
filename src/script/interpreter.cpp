@@ -2026,7 +2026,7 @@ static bool VerifyWitnessProgram(const CScriptWitness& witness, int witversion, 
             return set_error(serror, SCRIPT_ERR_WITNESS_PROGRAM_MISMATCH);
         }
         if (stack.size() >= 3 && !stack.back().empty() && stack.back()[0] == ANNEX_TAG) {
-            // Drop annex (always covered by the signature when present)
+            // Drop annex (this is non-standard; see IsWitnessStandard)
             const valtype& annex = SpanPopBack(stack);
             execdata.m_annex_hash = (HashWriter{} << annex).GetSHA256();
             execdata.m_annex_present = true;

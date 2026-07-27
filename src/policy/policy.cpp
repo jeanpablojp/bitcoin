@@ -347,6 +347,31 @@ bool IsWitnessStandard(const CTransaction& tx, const CCoinsViewCache& mapInputs)
                 return false;
             }
         }
+
+        // Check policy limits for P2MR spends, mirroring the Taproot limits:
+        // - MAX_STANDARD_TAPSCRIPT_STACK_ITEM_SIZE limit for stack item size
+        // - No annexes
+        if (witnessversion == 2 && witnessprogram.size() == WITNESS_V2_P2MR_SIZE && !p2sh) {
+            // P2MR spend (non-P2SH-wrapped, version 2, witness program size 32; see BIP 360)
+            std::span stack{tx.vin[i].scriptWitness.stack};
+            if (stack.size() >= 2 && !stack.back().empty() && stack.back()[0] == ANNEX_TAG) {
+                // Annexes are nonstandard as long as no semantics are defined for them.
+                return false;
+            }
+            if (stack.size() >= 2) {
+                // Script path spend (the only kind of P2MR spend)
+                const auto& control_block = SpanPopBack(stack);
+                SpanPopBack(stack); // Ignore script
+                if (control_block.empty()) return false; // Empty control block is invalid
+                if ((control_block[0] & TAPROOT_LEAF_MASK) == TAPROOT_LEAF_TAPSCRIPT) {
+                    // Leaf version 0xc0 (aka Tapscript, see BIP 342)
+                    for (const auto& item : stack) {
+                        if (item.size() > MAX_STANDARD_TAPSCRIPT_STACK_ITEM_SIZE) return false;
+                    }
+                }
+            }
+            // Fewer than 2 stack elements is already invalid by consensus rules
+        }
     }
     return true;
 }
