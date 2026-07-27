@@ -1895,19 +1895,32 @@ uint256 ComputeTapbranchHash(std::span<const unsigned char> a, std::span<const u
     return ss_branch.GetSHA256();
 }
 
-uint256 ComputeTaprootMerkleRoot(std::span<const unsigned char> control, const uint256& tapleaf_hash)
+//! Walk a Merkle path up from a leaf hash. base_size is the length of the control
+//! block prefix preceding the path: 33 for BIP341 taproot (control byte + internal
+//! key), 1 for BIP360 P2MR (control byte only). The tree construction is shared.
+static uint256 ComputeMerkleRootFromPath(std::span<const unsigned char> control, const uint256& tapleaf_hash, size_t base_size)
 {
-    assert(control.size() >= TAPROOT_CONTROL_BASE_SIZE);
-    assert(control.size() <= TAPROOT_CONTROL_MAX_SIZE);
-    assert((control.size() - TAPROOT_CONTROL_BASE_SIZE) % TAPROOT_CONTROL_NODE_SIZE == 0);
+    assert(control.size() >= base_size);
+    assert(control.size() <= base_size + TAPROOT_CONTROL_NODE_SIZE * TAPROOT_CONTROL_MAX_NODE_COUNT);
+    assert((control.size() - base_size) % TAPROOT_CONTROL_NODE_SIZE == 0);
 
-    const int path_len = (control.size() - TAPROOT_CONTROL_BASE_SIZE) / TAPROOT_CONTROL_NODE_SIZE;
+    const int path_len = (control.size() - base_size) / TAPROOT_CONTROL_NODE_SIZE;
     uint256 k = tapleaf_hash;
     for (int i = 0; i < path_len; ++i) {
-        std::span node{std::span{control}.subspan(TAPROOT_CONTROL_BASE_SIZE + TAPROOT_CONTROL_NODE_SIZE * i, TAPROOT_CONTROL_NODE_SIZE)};
+        std::span node{std::span{control}.subspan(base_size + TAPROOT_CONTROL_NODE_SIZE * i, TAPROOT_CONTROL_NODE_SIZE)};
         k = ComputeTapbranchHash(k, node);
     }
     return k;
+}
+
+uint256 ComputeTaprootMerkleRoot(std::span<const unsigned char> control, const uint256& tapleaf_hash)
+{
+    return ComputeMerkleRootFromPath(control, tapleaf_hash, TAPROOT_CONTROL_BASE_SIZE);
+}
+
+uint256 ComputeP2MRMerkleRoot(std::span<const unsigned char> control, const uint256& tapleaf_hash)
+{
+    return ComputeMerkleRootFromPath(control, tapleaf_hash, P2MR_CONTROL_BASE_SIZE);
 }
 
 static bool VerifyTaprootCommitment(const std::vector<unsigned char>& control, const std::vector<unsigned char>& program, const uint256& tapleaf_hash)

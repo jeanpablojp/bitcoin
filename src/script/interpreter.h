@@ -246,6 +246,11 @@ static constexpr size_t TAPROOT_CONTROL_NODE_SIZE = 32;
 static constexpr size_t TAPROOT_CONTROL_MAX_NODE_COUNT = 128;
 static constexpr size_t TAPROOT_CONTROL_MAX_SIZE = TAPROOT_CONTROL_BASE_SIZE + TAPROOT_CONTROL_NODE_SIZE * TAPROOT_CONTROL_MAX_NODE_COUNT;
 
+// BIP360 P2MR control blocks carry no internal key: control byte only,
+// followed by the Merkle path.
+static constexpr size_t P2MR_CONTROL_BASE_SIZE = 1;
+static constexpr size_t P2MR_CONTROL_MAX_SIZE = P2MR_CONTROL_BASE_SIZE + TAPROOT_CONTROL_NODE_SIZE * TAPROOT_CONTROL_MAX_NODE_COUNT;
+
 extern const HashWriter HASHER_TAPSIGHASH; //!< Hasher with tag "TapSighash" pre-fed to it.
 extern const HashWriter HASHER_TAPLEAF;    //!< Hasher with tag "TapLeaf" pre-fed to it.
 extern const HashWriter HASHER_TAPBRANCH;  //!< Hasher with tag "TapBranch" pre-fed to it.
@@ -373,6 +378,10 @@ uint256 ComputeTapbranchHash(std::span<const unsigned char> a, std::span<const u
 /** Compute the BIP341 taproot script tree Merkle root from control block and leaf hash.
  *  Requires control block to have valid length (33 + k*32, with k in {0,1,..,128}). */
 uint256 ComputeTaprootMerkleRoot(std::span<const unsigned char> control, const uint256& tapleaf_hash);
+/** Compute the script tree Merkle root from a BIP360 P2MR control block and leaf hash.
+ *  The tree construction is the same as BIP341's; the P2MR control block carries no
+ *  internal key, so its length must be 1 + k*32, with k in {0,1,..,128}. */
+uint256 ComputeP2MRMerkleRoot(std::span<const unsigned char> control, const uint256& tapleaf_hash);
 
 bool EvalScript(std::vector<std::vector<unsigned char> >& stack, const CScript& script, script_verify_flags flags, const BaseSignatureChecker& checker, SigVersion sigversion, ScriptExecutionData& execdata, ScriptError* error = nullptr);
 bool EvalScript(std::vector<std::vector<unsigned char> >& stack, const CScript& script, script_verify_flags flags, const BaseSignatureChecker& checker, SigVersion sigversion, ScriptError* error = nullptr);
