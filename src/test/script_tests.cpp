@@ -1531,7 +1531,7 @@ BOOST_AUTO_TEST_CASE(script_p2mr)
         BOOST_CHECK_EQUAL(FormatScriptError(err), FormatScriptError(SCRIPT_ERR_P2MR_WRONG_CONTROL_BYTE));
     }
 
-    // Fewer than two elements after annex handling.
+    // A single witness element cannot provide both script and control block.
     {
         CScriptWitness w;
         w.stack = {control};
@@ -1562,7 +1562,8 @@ BOOST_AUTO_TEST_CASE(script_p2mr)
     }
 
     // Depth-zero tree: anyone-can-spend once the leaf script preimage is known.
-    // No signature is required and the leaf script is not executed.
+    // No signature is required and the leaf script is not executed
+    // (spec, Script Validation: "If m = 0, succeed immediately").
     {
         const CScript spk_d0 = CScript() << OP_2 << ToByteVector(hash_a);
         CScriptWitness w;
@@ -1637,12 +1638,61 @@ BOOST_AUTO_TEST_CASE(script_p2mr)
         BOOST_CHECK_MESSAGE(err == SCRIPT_ERR_OK, ScriptErrorString(err));
     }
 
-    // Extra initial stack elements are ignored when execution is skipped (m = 0).
+    // Extra initial stack elements are ignored when execution is skipped
+    // (m = 0): the spec's success rule precedes script execution, and the
+    // initial stack is only consumed by execution.
     {
         const CScript spk_d0 = CScript() << OP_2 << ToByteVector(hash_a);
         CScriptWitness w;
         w.stack = {{0xde, 0xad}, leaf_a_bytes, {control_byte}};
         BOOST_CHECK(VerifyScript(CScript(), spk_d0, &w, p2mr_flags, checker, &err));
+        BOOST_CHECK_MESSAGE(err == SCRIPT_ERR_OK, ScriptErrorString(err));
+    }
+
+    // A 128-node Merkle path (the maximum) is valid. An unknown leaf version
+    // is used so that no signature is needed (execution is skipped).
+    {
+        const uint256 hash_unk = ComputeTapleafHash(0xe0, leaf_a);
+        std::vector<unsigned char> control128{0xe0 | 1};
+        uint256 k = hash_unk;
+        for (int j = 0; j < 128; ++j) {
+            const uint256 node;
+            control128.insert(control128.end(), node.begin(), node.end());
+            k = ComputeTapbranchHash(k, node);
+        }
+        const CScript spk128 = CScript() << OP_2 << ToByteVector(k);
+        CScriptWitness w;
+        w.stack = {leaf_a_bytes, control128};
+        BOOST_CHECK(VerifyScript(CScript(), spk128, &w, p2mr_flags, checker, &err));
+        BOOST_CHECK_MESSAGE(err == SCRIPT_ERR_OK, ScriptErrorString(err));
+    }
+
+    // An empty control block is invalid.
+    {
+        CScriptWitness w;
+        w.stack = {leaf_a_bytes, {}};
+        BOOST_CHECK(!VerifyScript(CScript(), spk, &w, p2mr_flags, checker, &err));
+        BOOST_CHECK_EQUAL(FormatScriptError(err), FormatScriptError(SCRIPT_ERR_TAPROOT_WRONG_CONTROL_SIZE));
+    }
+
+    // P2SH-wrapped v2/32 is not P2MR (native segwit only): unencumbered.
+    {
+        const CScript redeem = CScript() << OP_2 << ToByteVector(root);
+        const CScript spk_p2sh = GetScriptForDestination(ScriptHash(redeem));
+        const CScript script_sig = CScript() << std::vector<unsigned char>(redeem.begin(), redeem.end());
+        CScriptWitness w;
+        w.stack = {{0x01}};
+        BOOST_CHECK(VerifyScript(script_sig, spk_p2sh, &w, p2mr_flags, checker, &err));
+        BOOST_CHECK_MESSAGE(err == SCRIPT_ERR_OK, ScriptErrorString(err));
+    }
+
+    // Witness v2 with a program size other than 32 bytes stays unencumbered.
+    {
+        const std::vector<unsigned char> program33(33, 0x42);
+        const CScript spk33 = CScript() << OP_2 << program33;
+        CScriptWitness w;
+        w.stack = {{0x01}};
+        BOOST_CHECK(VerifyScript(CScript(), spk33, &w, p2mr_flags, checker, &err));
         BOOST_CHECK_MESSAGE(err == SCRIPT_ERR_OK, ScriptErrorString(err));
     }
 }
