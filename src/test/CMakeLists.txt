@@ -73,6 +73,7 @@ add_executable(test_bitcoin
   node_init_tests.cpp
   node_warnings_tests.cpp
   orphanage_tests.cpp
+  p2mr_vector_tests.cpp
   pcp_tests.cpp
   peerman_tests.cpp
   pmt_tests.cpp
@@ -147,6 +148,8 @@ target_json_data_sources(test_bitcoin
   data/blockfilters.json
   data/key_io_invalid.json
   data/key_io_valid.json
+  data/p2mr_construction.json
+  data/p2mr_pqc_construction.json
   data/script_tests.json
   data/sighash.json
   data/siphash.json
