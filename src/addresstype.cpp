@@ -87,6 +87,12 @@ bool ExtractDestination(const CScript& scriptPubKey, CTxDestination& addressRet)
         addressRet = tap;
         return true;
     }
+    case TxoutType::WITNESS_V2_P2MR: {
+        WitnessV2P2MR mr;
+        std::copy(vSolutions[0].begin(), vSolutions[0].end(), mr.begin());
+        addressRet = mr;
+        return true;
+    }
     case TxoutType::ANCHOR: {
         addressRet = PayToAnchor();
         return true;
@@ -143,6 +149,11 @@ public:
         return CScript() << OP_1 << ToByteVector(tap);
     }
 
+    CScript operator()(const WitnessV2P2MR& mr) const
+    {
+        return CScript() << OP_2 << ToByteVector(mr);
+    }
+
     CScript operator()(const WitnessUnknown& id) const
     {
         return CScript() << CScript::EncodeOP_N(id.GetWitnessVersion()) << id.GetWitnessProgram();
@@ -159,6 +170,7 @@ public:
     bool operator()(const WitnessV0KeyHash& dest) const { return true; }
     bool operator()(const WitnessV0ScriptHash& dest) const { return true; }
     bool operator()(const WitnessV1Taproot& dest) const { return true; }
+    bool operator()(const WitnessV2P2MR& dest) const { return true; }
     bool operator()(const WitnessUnknown& dest) const { return true; }
 };
 } // namespace

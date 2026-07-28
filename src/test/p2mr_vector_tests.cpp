@@ -137,9 +137,14 @@ void CheckConstructionVectors(std::string_view json_raw, bool pqc_file, size_t n
         const CScript spk{CScript() << OP_2 << ToByteVector(merkle_root)};
         BOOST_CHECK_MESSAGE(HexStr(spk) == expected["scriptPubKey"].get_str(), id + ": scriptPubKey");
 
-        const std::string address{EncodeDestination(
-            WitnessUnknown{2, {merkle_root.begin(), merkle_root.end()}})};
+        const std::string address{EncodeDestination(WitnessV2P2MR{merkle_root})};
         BOOST_CHECK_MESSAGE(address == expected["bip350Address"].get_str(), id + ": address");
+
+        // Round-trip: the address must decode to the dedicated destination
+        // type and back to the same scriptPubKey.
+        const CTxDestination dest{DecodeDestination(address)};
+        BOOST_CHECK_MESSAGE(std::holds_alternative<WitnessV2P2MR>(dest), id + ": decoded type");
+        BOOST_CHECK_MESSAGE(GetScriptForDestination(dest) == spk, id + ": script round-trip");
 
         const UniValue& cbs{expected["scriptPathControlBlocks"]};
         BOOST_REQUIRE_MESSAGE(cbs.size() == leaves.size(), id + ": control block count");
@@ -171,6 +176,17 @@ BOOST_AUTO_TEST_CASE(p2mr_construction)
 BOOST_AUTO_TEST_CASE(p2mr_pqc_construction)
 {
     CheckConstructionVectors(json_tests::p2mr_pqc_construction, /*pqc_file=*/true, /*num_vectors=*/7);
+}
+
+BOOST_AUTO_TEST_CASE(p2mr_address_boundaries)
+{
+    // A v2 address with a program size other than 32 bytes is not P2MR and
+    // stays WitnessUnknown in both directions.
+    const WitnessUnknown unk{2, std::vector<unsigned char>(33, 0x42)};
+    const std::string addr{EncodeDestination(unk)};
+    const CTxDestination back{DecodeDestination(addr)};
+    BOOST_CHECK(std::holds_alternative<WitnessUnknown>(back));
+    BOOST_CHECK(std::get<WitnessUnknown>(back) == unk);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

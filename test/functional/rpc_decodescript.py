@@ -187,6 +187,14 @@ class DecodeScriptTest(BitcoinTestFramework):
         assert_equal('1 ' + xonly_public_key, rpc_result['asm'])
         assert 'segwit' not in rpc_result
 
+        self.log.info("- P2MR")
+        # 2 <32-byte script tree merkle root> (BIP 360)
+        merkle_root = '02'*32
+        rpc_result = self.nodes[0].decodescript('5220' + merkle_root)
+        assert_equal('witness_v2_p2mr', rpc_result['type'])
+        assert_equal('2 ' + merkle_root, rpc_result['asm'])
+        assert 'segwit' not in rpc_result
+
         self.log.info("- P2A (anchor)")
         # 1 <4e73>
         witprog_hex = '4e73'
