@@ -30,7 +30,9 @@ from test_framework.script import (
     CScript,
     LEAF_VERSION_TAPSCRIPT,
     OP_2,
+    OP_2DUP,
     OP_CHECKSIG,
+    OP_CHECKSIGVERIFY,
     OP_DROP,
     TaggedHash,
     TaprootSignatureHash,
@@ -163,6 +165,7 @@ class P2MRTest(BitcoinTestFramework):
         self.test_block_level_rejection(keys, checksig)
         self.test_annex(keys, checksig)
         self.test_witness_weight(keys, checksig)
+        self.test_validation_weight_budget(keys, checksig)
         self.test_official_vector()
         self.test_rpc_round_trip(keys, xonly)
         self.test_short_witness(checksig)
@@ -367,6 +370,57 @@ class P2MRTest(BitcoinTestFramework):
                       f"weight {p2tr['weight']}, vsize {p2tr['vsize']}")
         assert_equal(len(control) - results[0][1], 32)
         assert_equal(p2tr['weight'] - results[0][2], 32)
+
+    def test_validation_weight_budget(self, keys, checksig):
+        """The BIP 342 budget is the serialized witness size plus 50, and each
+        signature check that passes costs 50. A P2MR witness is 32 bytes
+        smaller than the equivalent taproot script path, so it starts with 32
+        less budget: the one place where the smaller control block counts
+        against P2MR rather than for it."""
+        self.log.info("Validation weight budget: P2MR affords one check fewer than taproot")
+        key = keys[0]
+        xonly = compute_xonly_pubkey(key.get_bytes())[0]
+
+        def leaf(checks):
+            """A leaf checking the same signature `checks` times. Each check
+            past the first adds 2 script bytes and costs 50 of budget, so the
+            budget runs out well before the script does."""
+            return CScript([OP_2DUP, OP_CHECKSIGVERIFY] * (checks - 1) + [OP_CHECKSIG])
+
+        # Three checks fit in a depth-1 P2MR spend; the fourth does not.
+        for checks, accept in ((3, True), (4, False)):
+            tree = P2MRTree([leaf(checks), checksig[1]])
+            funded = self.fund(tree.script_pubkey)
+            tx = self.spend_tx(funded)
+            sig = self.sign_leaf(tx, self.spent_outputs(funded), key, tree.scripts[0])
+            tx.wit.vtxinwit[0].scriptWitness.stack = [
+                sig, xonly, tree.scripts[0], tree.control_blocks[0]]
+            if accept:
+                self.nodes[0].sendrawtransaction(tx.serialize().hex())
+                self.generate(self.wallet, 1)
+            else:
+                self.submit_block_with(
+                    tx, accept=False,
+                    reason="block-script-verify-flag-failed (Too much signature "
+                           "validation relative to witness weight)")
+
+        # The same four-check leaf under taproot: the internal key in the
+        # control block pays for the check that P2MR cannot afford.
+        tap = taproot_construct(compute_xonly_pubkey(keys[3].get_bytes())[0],
+                                [("a", leaf(4)), ("b", checksig[1])])
+        funded = self.fund(tap.scriptPubKey)
+        tx = self.spend_tx(funded)
+        tapleaf = tap.leaves["a"]
+        sighash = TaprootSignatureHash(tx, self.spent_outputs(funded), hash_type=0,
+                                       input_index=0, scriptpath=True,
+                                       leaf_script=tapleaf.script,
+                                       codeseparator_pos=0xFFFFFFFF)
+        sig = sign_schnorr(key.get_bytes(), sighash)
+        control = bytes([tapleaf.version + tap.negflag]) + tap.internal_pubkey + tapleaf.merklebranch
+        tx.wit.vtxinwit[0].scriptWitness.stack = [sig, xonly, tapleaf.script, control]
+        self.nodes[0].sendrawtransaction(tx.serialize().hex())
+        self.generate(self.wallet, 1)
+        self.log.info("  four checks: rejected as P2MR, accepted as a P2TR script path")
 
     def test_official_vector(self):
         """Cross-check the Python tree against a published BIP 360 vector."""
