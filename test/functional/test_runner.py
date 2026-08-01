@@ -411,6 +411,7 @@ NON_SCRIPTS = [
     "combine_logs.py",
     "create_cache.py",
     "test_runner.py",
+    "tool_p2mr_spend_vectors.py",
 ]
 
 def main():

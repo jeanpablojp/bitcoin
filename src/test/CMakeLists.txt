@@ -150,6 +150,7 @@ target_json_data_sources(test_bitcoin
   data/key_io_valid.json
   data/p2mr_construction.json
   data/p2mr_pqc_construction.json
+  data/p2mr_spending.json
   data/script_tests.json
   data/sighash.json
   data/siphash.json
