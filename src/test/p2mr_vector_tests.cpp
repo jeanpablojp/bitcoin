@@ -21,7 +21,7 @@
 #include <vector>
 
 // BIP 360 construction test vectors, from the bitcoin/bips repository at the
-// pinned commit 0fdf6ffdbb394a73c80978ae647322ceda8b9337
+// pinned commit b31410ca587cec1cfd880b6617cc6b7cb036e6d7
 // (bip-0360/ref-impl/common/tests/data/). They are construction-only: script
 // tree in; leaf hashes, Merkle root, scriptPubKey, address and control blocks
 // out. Spend-path coverage lives in script_tests.cpp (script_p2mr) and in the
@@ -64,28 +64,7 @@ uint256 WalkTree(const UniValue& node, std::vector<VectorLeaf>& leaves)
     return leaf.hash;
 }
 
-//! Known bugs in the published vectors at the pinned commit, fix submitted
-//! upstream in bitcoin/bips#2220. For these, the harness asserts the
-//! divergence still reproduces, so the upstream fix landing is noticed and
-//! the exception can be dropped (together with a vector re-pin).
-bool KnownVectorBug(bool pqc_file, const std::string& vector_id, const std::string& check)
-{
-    if (!pqc_file) return false;
-    // leafHashes[0] and [2] are swapped in both three-leaf vectors; the same
-    // trees in p2mr_construction.json list them in depth-first order.
-    if ((vector_id == "p2mr_three_leaf_complex" || vector_id == "p2mr_three_leaf_alternative") &&
-        (check == "leafHash0" || check == "leafHash2")) {
-        return true;
-    }
-    // The control block for the 0xfa-version leaf carries control byte 0xc1;
-    // by the spec's control byte rules it must be 0xfb (leaf version with the
-    // low bit set). The vector's own Merkle root confirms the leaf was hashed
-    // under 0xfa, so the published control block cannot satisfy validation.
-    if (vector_id == "p2mr_different_version_leaves" && check == "controlBlock1") return true;
-    return false;
-}
-
-void CheckConstructionVectors(std::string_view json_raw, bool pqc_file, size_t num_vectors)
+void CheckConstructionVectors(std::string_view json_raw, size_t num_vectors)
 {
     // Not read_json(): these files carry a top-level object, not an array.
     UniValue root;
@@ -125,12 +104,8 @@ void CheckConstructionVectors(std::string_view json_raw, bool pqc_file, size_t n
         for (size_t k{0}; k < leaves.size(); ++k) {
             // Leaves are listed in depth-first order and ids follow it.
             BOOST_CHECK_MESSAGE(leaves[k].id == static_cast<int>(k), id + ": leaf id order");
-            const bool match{HexStr(leaves[k].hash) == leaf_hashes[k].get_str()};
-            if (KnownVectorBug(pqc_file, id, "leafHash" + util::ToString(k))) {
-                BOOST_CHECK_MESSAGE(!match, id + ": upstream bug no longer reproduces, drop the exception");
-            } else {
-                BOOST_CHECK_MESSAGE(match, id + ": leaf hash " + util::ToString(k));
-            }
+            BOOST_CHECK_MESSAGE(HexStr(leaves[k].hash) == leaf_hashes[k].get_str(),
+                                id + ": leaf hash " + util::ToString(k));
         }
         BOOST_CHECK_MESSAGE(HexStr(merkle_root) == inter["merkleRoot"].get_str(), id + ": merkle root");
 
@@ -151,12 +126,8 @@ void CheckConstructionVectors(std::string_view json_raw, bool pqc_file, size_t n
         for (size_t k{0}; k < leaves.size(); ++k) {
             std::vector<unsigned char> control{static_cast<unsigned char>(leaves[k].version | 1)};
             control.insert(control.end(), leaves[k].path.begin(), leaves[k].path.end());
-            const bool match{HexStr(control) == cbs[k].get_str()};
-            if (KnownVectorBug(pqc_file, id, "controlBlock" + util::ToString(k))) {
-                BOOST_CHECK_MESSAGE(!match, id + ": upstream bug no longer reproduces, drop the exception");
-            } else {
-                BOOST_CHECK_MESSAGE(match, id + ": control block " + util::ToString(k));
-            }
+            BOOST_CHECK_MESSAGE(HexStr(control) == cbs[k].get_str(),
+                                id + ": control block " + util::ToString(k));
 
             // Tie the vector to the consensus code: walking this control
             // block's path from the leaf hash must reproduce the root.
@@ -170,12 +141,12 @@ void CheckConstructionVectors(std::string_view json_raw, bool pqc_file, size_t n
 
 BOOST_AUTO_TEST_CASE(p2mr_construction)
 {
-    CheckConstructionVectors(json_tests::p2mr_construction, /*pqc_file=*/false, /*num_vectors=*/9);
+    CheckConstructionVectors(json_tests::p2mr_construction, /*num_vectors=*/9);
 }
 
 BOOST_AUTO_TEST_CASE(p2mr_pqc_construction)
 {
-    CheckConstructionVectors(json_tests::p2mr_pqc_construction, /*pqc_file=*/true, /*num_vectors=*/7);
+    CheckConstructionVectors(json_tests::p2mr_pqc_construction, /*num_vectors=*/7);
 }
 
 BOOST_AUTO_TEST_CASE(p2mr_address_boundaries)

@@ -425,7 +425,7 @@ class P2MRTest(BitcoinTestFramework):
     def test_official_vector(self):
         """Cross-check the Python tree against a published BIP 360 vector."""
         self.log.info("Reproducing an official BIP 360 construction vector")
-        # p2mr_two_leaf_same_version, bitcoin/bips at commit 0fdf6ff.
+        # p2mr_two_leaf_same_version, bitcoin/bips at commit b31410c.
         scripts = [
             CScript(bytes.fromhex("2044b178d64c32c4a05cc4f4d1407268f764c940d20ce97abfd44db5c3592b72fdac")),
             CScript(bytes.fromhex("07546170726f6f74")),
