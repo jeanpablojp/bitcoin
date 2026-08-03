@@ -59,6 +59,7 @@ target_link_libraries(bitcoin_clientversion
 add_dependencies(bitcoin_clientversion generate_build_info)
 
 add_subdirectory(crypto)
+add_subdirectory(pqc)
 add_subdirectory(util)
 if(ENABLE_IPC)
   add_subdirectory(ipc)
@@ -83,6 +84,7 @@ target_link_libraries(bitcoin_consensus
   PRIVATE
     core_interface
     bitcoin_crypto
+    bitcoin_pqc
     secp256k1
 )
 

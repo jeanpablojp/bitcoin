@@ -80,6 +80,7 @@ add_library(bitcoinkernel
   ../versionbits.cpp
   $<TARGET_OBJECTS:bitcoin_clientversion>
   $<TARGET_OBJECTS:bitcoin_crypto>
+  $<TARGET_OBJECTS:bitcoin_pqc>
   $<TARGET_OBJECTS:leveldb>
   $<TARGET_OBJECTS:crc32c>
 )
@@ -95,6 +96,7 @@ endif()
 # Also manually apply the warnings to the kernel's internal dependencies
 target_link_libraries(bitcoin_clientversion PRIVATE kernel_warn_interface)
 target_link_libraries(bitcoin_crypto PRIVATE kernel_warn_interface)
+target_link_libraries(bitcoin_pqc PRIVATE kernel_warn_interface)
 target_link_libraries(leveldb PRIVATE kernel_warn_interface)
 target_link_libraries(crc32c PRIVATE kernel_warn_interface)
 
