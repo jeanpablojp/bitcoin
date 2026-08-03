@@ -6,6 +6,7 @@
 #include <compressor.h>
 #include <core_io.h>
 #include <key.h>
+#include <pqc/pqc_verify.h>
 #include <rpc/util.h>
 #include <script/interpreter.h>
 #include <script/script.h>
@@ -91,10 +92,16 @@ static ScriptErrorDesc script_errors[]={
     {SCRIPT_ERR_WITNESS_UNEXPECTED, "WITNESS_UNEXPECTED"},
     {SCRIPT_ERR_WITNESS_PUBKEYTYPE, "WITNESS_PUBKEYTYPE"},
     {SCRIPT_ERR_TAPSCRIPT_EMPTY_PUBKEY, "TAPSCRIPT_EMPTY_PUBKEY"},
+    {SCRIPT_ERR_TAPSCRIPT_VALIDATION_WEIGHT, "TAPSCRIPT_VALIDATION_WEIGHT"},
     {SCRIPT_ERR_SCHNORR_SIG, "SCHNORR_SIG"},
     {SCRIPT_ERR_TAPROOT_WRONG_CONTROL_SIZE, "TAPROOT_WRONG_CONTROL_SIZE"},
     {SCRIPT_ERR_DISCOURAGE_UPGRADABLE_TAPROOT_VERSION, "DISCOURAGE_UPGRADABLE_TAPROOT_VERSION"},
     {SCRIPT_ERR_P2MR_WRONG_CONTROL_BYTE, "P2MR_WRONG_CONTROL_BYTE"},
+    {SCRIPT_ERR_PQSIG_SCHEME, "PQSIG_SCHEME"},
+    {SCRIPT_ERR_PQSIG_SIZE, "PQSIG_SIZE"},
+    {SCRIPT_ERR_PQSIG_HASHTYPE, "PQSIG_HASHTYPE"},
+    {SCRIPT_ERR_PQSIG_PUBKEYHASH, "PQSIG_PUBKEYHASH"},
+    {SCRIPT_ERR_PQSIG, "PQSIG"},
     {SCRIPT_ERR_OP_CODESEPARATOR, "OP_CODESEPARATOR"},
     {SCRIPT_ERR_SIG_FINDANDDELETE, "SIG_FINDANDDELETE"},
     {SCRIPT_ERR_SCRIPTNUM, "SCRIPTNUM"}
@@ -1693,6 +1700,411 @@ BOOST_AUTO_TEST_CASE(script_p2mr)
         CScriptWitness w;
         w.stack = {{0x01}};
         BOOST_CHECK(VerifyScript(CScript(), spk33, &w, p2mr_flags, checker, &err));
+        BOOST_CHECK_MESSAGE(err == SCRIPT_ERR_OK, ScriptErrorString(err));
+    }
+}
+
+/** OP_CHECKPQSIG (draft): SLH-DSA-SHA2-128s spending of a P2MR leaf. */
+BOOST_AUTO_TEST_CASE(script_pqsig_slh_dsa)
+{
+    // Deterministic keypair from a fixed seed.
+    std::vector<unsigned char> pq_pubkey(pqc::SLH_DSA_SHA2_128S_PUBKEY_SIZE);
+    std::vector<unsigned char> pq_seckey(pqc::SLH_DSA_SHA2_128S_SECKEY_SIZE);
+    const std::vector<unsigned char> seed(pqc::SLH_DSA_SHA2_128S_SEED_SIZE, 0x17);
+    BOOST_REQUIRE(pqc::SeedKeypair(pqc::Scheme::SLH_DSA_SHA2_128S, pq_pubkey.data(), pq_seckey.data(), seed.data()));
+
+    // Leaf script: <scheme_byte || H(pubkey)> OP_CHECKPQSIG.
+    HashWriter pubkey_hasher{TaggedHash("PQPubKeyHash")};
+    pubkey_hasher.write(MakeByteSpan(pq_pubkey));
+    const uint256 pubkey_hash{pubkey_hasher.GetSHA256()};
+    std::vector<unsigned char> commitment{static_cast<unsigned char>(pqc::Scheme::SLH_DSA_SHA2_128S)};
+    commitment.insert(commitment.end(), pubkey_hash.begin(), pubkey_hash.end());
+    const CScript leaf_pq = CScript() << commitment << OP_CHECKPQSIG;
+    const std::vector<unsigned char> leaf_pq_bytes(leaf_pq.begin(), leaf_pq.end());
+    BOOST_CHECK_EQUAL(leaf_pq_bytes.size(), 35U);
+
+    // Two-leaf tree so that the output is not depth-0 (anyone-can-spend).
+    const CScript leaf_b = CScript() << OP_RETURN;
+    const uint256 hash_pq = ComputeTapleafHash(TAPROOT_LEAF_TAPSCRIPT, leaf_pq);
+    const uint256 hash_b = ComputeTapleafHash(TAPROOT_LEAF_TAPSCRIPT, leaf_b);
+    const uint256 root = ComputeTapbranchHash(hash_pq, hash_b);
+
+    const CScript spk = CScript() << OP_2 << ToByteVector(root);
+    const CAmount amount{10000};
+    const CTransaction credit_tx{BuildCreditingTransaction(spk, amount)};
+    CMutableTransaction spend_tx = BuildSpendingTransaction(CScript(), CScriptWitness(), credit_tx);
+    spend_tx.vin[0].scriptWitness.stack.push_back({});
+
+    PrecomputedTransactionData txdata;
+    txdata.Init(spend_tx, {credit_tx.vout[0]});
+    const MutableTransactionSignatureChecker checker{&spend_tx, 0, amount, txdata, MissingDataBehavior::FAIL};
+
+    const unsigned char control_byte{TAPROOT_LEAF_TAPSCRIPT | 1};
+    std::vector<unsigned char> control{control_byte};
+    control.insert(control.end(), hash_b.begin(), hash_b.end());
+
+    const script_verify_flags base_flags{SCRIPT_VERIFY_P2SH | SCRIPT_VERIFY_WITNESS | SCRIPT_VERIFY_TAPROOT | SCRIPT_VERIFY_P2MR};
+    const script_verify_flags pq_flags{base_flags | SCRIPT_VERIFY_PQSIG};
+    ScriptError err;
+
+    // Sign the tapscript sighash of the PQ leaf.
+    const auto pq_sign = [&](uint8_t hashtype) {
+        ScriptExecutionData execdata;
+        execdata.m_annex_init = true;
+        execdata.m_annex_present = false;
+        execdata.m_tapleaf_hash_init = true;
+        execdata.m_tapleaf_hash = hash_pq;
+        execdata.m_codeseparator_pos_init = true;
+        execdata.m_codeseparator_pos = 0xFFFFFFFF;
+        uint256 sighash;
+        BOOST_REQUIRE(SignatureHashSchnorr(sighash, execdata, spend_tx, 0, hashtype, SigVersion::TAPSCRIPT, txdata, MissingDataBehavior::FAIL));
+        std::vector<unsigned char> sig(pqc::SLH_DSA_SHA2_128S_SIG_SIZE);
+        size_t sig_len{0};
+        BOOST_REQUIRE(pqc::Sign(pqc::Scheme::SLH_DSA_SHA2_128S, sig.data(), &sig_len, sighash.begin(), pq_seckey.data()));
+        BOOST_REQUIRE_EQUAL(sig_len, pqc::SLH_DSA_SHA2_128S_SIG_SIZE);
+        if (hashtype != SIGHASH_DEFAULT) sig.push_back(hashtype);
+        return sig;
+    };
+    const std::vector<unsigned char> sig_default{pq_sign(SIGHASH_DEFAULT)};
+
+    // Valid spend, SIGHASH_DEFAULT.
+    {
+        CScriptWitness w;
+        w.stack = {sig_default, pq_pubkey, leaf_pq_bytes, control};
+        BOOST_CHECK(VerifyScript(CScript(), spk, &w, pq_flags, checker, &err));
+        BOOST_CHECK_MESSAGE(err == SCRIPT_ERR_OK, ScriptErrorString(err));
+    }
+
+    // Valid spend, SIGHASH_ALL (explicit trailing byte).
+    {
+        CScriptWitness w;
+        w.stack = {pq_sign(SIGHASH_ALL), pq_pubkey, leaf_pq_bytes, control};
+        BOOST_CHECK(VerifyScript(CScript(), spk, &w, pq_flags, checker, &err));
+        BOOST_CHECK_MESSAGE(err == SCRIPT_ERR_OK, ScriptErrorString(err));
+    }
+
+    // Valid spend, SIGHASH_SINGLE | ANYONECANPAY: the full BIP 341 hashtype
+    // range applies, not just the ALL variants.
+    {
+        CScriptWitness w;
+        w.stack = {pq_sign(SIGHASH_SINGLE | SIGHASH_ANYONECANPAY), pq_pubkey, leaf_pq_bytes, control};
+        BOOST_CHECK(VerifyScript(CScript(), spk, &w, pq_flags, checker, &err));
+        BOOST_CHECK_MESSAGE(err == SCRIPT_ERR_OK, ScriptErrorString(err));
+    }
+
+    // Without SCRIPT_VERIFY_PQSIG the leaf is anyone-can-spend: 0xbb is still
+    // OP_SUCCESS187, which is what makes the change a soft fork.
+    {
+        CScriptWitness w;
+        w.stack = {{}, {}, leaf_pq_bytes, control};
+        BOOST_CHECK(VerifyScript(CScript(), spk, &w, base_flags, checker, &err));
+        BOOST_CHECK_MESSAGE(err == SCRIPT_ERR_OK, ScriptErrorString(err));
+    }
+
+    // Bit-flipped signature.
+    {
+        auto sig = sig_default;
+        sig[100] ^= 1;
+        CScriptWitness w;
+        w.stack = {sig, pq_pubkey, leaf_pq_bytes, control};
+        BOOST_CHECK(!VerifyScript(CScript(), spk, &w, pq_flags, checker, &err));
+        BOOST_CHECK_EQUAL(FormatScriptError(err), FormatScriptError(SCRIPT_ERR_PQSIG));
+    }
+
+    // Signature over a different sighash (wrong hashtype byte appended).
+    {
+        auto sig = sig_default;
+        sig.push_back(SIGHASH_ALL);
+        CScriptWitness w;
+        w.stack = {sig, pq_pubkey, leaf_pq_bytes, control};
+        BOOST_CHECK(!VerifyScript(CScript(), spk, &w, pq_flags, checker, &err));
+        BOOST_CHECK_EQUAL(FormatScriptError(err), FormatScriptError(SCRIPT_ERR_PQSIG));
+    }
+
+    // An explicit SIGHASH_DEFAULT byte is invalid: it would give every
+    // signature two valid encodings.
+    {
+        auto sig = sig_default;
+        sig.push_back(SIGHASH_DEFAULT);
+        CScriptWitness w;
+        w.stack = {sig, pq_pubkey, leaf_pq_bytes, control};
+        BOOST_CHECK(!VerifyScript(CScript(), spk, &w, pq_flags, checker, &err));
+        BOOST_CHECK_EQUAL(FormatScriptError(err), FormatScriptError(SCRIPT_ERR_PQSIG_HASHTYPE));
+    }
+
+    // An out-of-range hashtype byte (0x04) fails in the sighash computation.
+    {
+        auto sig = sig_default;
+        sig.push_back(0x04);
+        CScriptWitness w;
+        w.stack = {sig, pq_pubkey, leaf_pq_bytes, control};
+        BOOST_CHECK(!VerifyScript(CScript(), spk, &w, pq_flags, checker, &err));
+        BOOST_CHECK_EQUAL(FormatScriptError(err), FormatScriptError(SCRIPT_ERR_PQSIG_HASHTYPE));
+    }
+
+    // Signature one byte short, and two bytes long. One byte over is the
+    // valid encoding with a sighash byte, covered above.
+    for (const int delta : {-1, 2}) {
+        auto sig = sig_default;
+        sig.resize(sig.size() + delta, 0x00);
+        CScriptWitness w;
+        w.stack = {sig, pq_pubkey, leaf_pq_bytes, control};
+        BOOST_CHECK(!VerifyScript(CScript(), spk, &w, pq_flags, checker, &err));
+        BOOST_CHECK_EQUAL(FormatScriptError(err), FormatScriptError(SCRIPT_ERR_PQSIG_SIZE));
+    }
+
+    // Wrong public key size.
+    {
+        auto short_pubkey = pq_pubkey;
+        short_pubkey.pop_back();
+        CScriptWitness w;
+        w.stack = {sig_default, short_pubkey, leaf_pq_bytes, control};
+        BOOST_CHECK(!VerifyScript(CScript(), spk, &w, pq_flags, checker, &err));
+        BOOST_CHECK_EQUAL(FormatScriptError(err), FormatScriptError(SCRIPT_ERR_PQSIG_SIZE));
+    }
+
+    // Right size, wrong public key: the committed hash does not match.
+    {
+        auto other_pubkey = pq_pubkey;
+        other_pubkey[0] ^= 1;
+        CScriptWitness w;
+        w.stack = {sig_default, other_pubkey, leaf_pq_bytes, control};
+        BOOST_CHECK(!VerifyScript(CScript(), spk, &w, pq_flags, checker, &err));
+        BOOST_CHECK_EQUAL(FormatScriptError(err), FormatScriptError(SCRIPT_ERR_PQSIG_PUBKEYHASH));
+    }
+
+    // Empty signature pushes false, so the script fails on a false top stack
+    // element rather than aborting. The commitment is still checked, so an
+    // empty signature cannot bypass a malformed leaf.
+    {
+        CScriptWitness w;
+        w.stack = {{}, pq_pubkey, leaf_pq_bytes, control};
+        BOOST_CHECK(!VerifyScript(CScript(), spk, &w, pq_flags, checker, &err));
+        BOOST_CHECK_EQUAL(FormatScriptError(err), FormatScriptError(SCRIPT_ERR_EVAL_FALSE));
+    }
+
+    // With an empty signature the pubkey is not inspected at all: a branch
+    // construction over two schemes can leave a pubkey of the other scheme's
+    // size on the stack, so this must stay a false push, not a size failure.
+    {
+        CScriptWitness w;
+        w.stack = {{}, std::vector<unsigned char>(pqc::ML_DSA_44_PUBKEY_SIZE, 0x00), leaf_pq_bytes, control};
+        BOOST_CHECK(!VerifyScript(CScript(), spk, &w, pq_flags, checker, &err));
+        BOOST_CHECK_EQUAL(FormatScriptError(err), FormatScriptError(SCRIPT_ERR_EVAL_FALSE));
+    }
+
+    // Unknown scheme byte, and a commitment of the wrong length. Both are
+    // enforced before the signature is looked at, so an empty signature does
+    // not get past them.
+    {
+        std::vector<unsigned char> bad_scheme{0x7f};
+        bad_scheme.insert(bad_scheme.end(), pubkey_hash.begin(), pubkey_hash.end());
+        const CScript leaf_bad = CScript() << bad_scheme << OP_CHECKPQSIG;
+        const uint256 hash_bad = ComputeTapleafHash(TAPROOT_LEAF_TAPSCRIPT, leaf_bad);
+        const CScript spk_bad = CScript() << OP_2 << ToByteVector(ComputeTapbranchHash(hash_bad, hash_b));
+        CScriptWitness w;
+        w.stack = {{}, pq_pubkey, {leaf_bad.begin(), leaf_bad.end()}, control};
+        BOOST_CHECK(!VerifyScript(CScript(), spk_bad, &w, pq_flags, checker, &err));
+        BOOST_CHECK_EQUAL(FormatScriptError(err), FormatScriptError(SCRIPT_ERR_PQSIG_SCHEME));
+    }
+    {
+        const CScript leaf_short = CScript() << std::vector<unsigned char>(32, 0x02) << OP_CHECKPQSIG;
+        const uint256 hash_short = ComputeTapleafHash(TAPROOT_LEAF_TAPSCRIPT, leaf_short);
+        const CScript spk_short = CScript() << OP_2 << ToByteVector(ComputeTapbranchHash(hash_short, hash_b));
+        CScriptWitness w;
+        w.stack = {{}, pq_pubkey, {leaf_short.begin(), leaf_short.end()}, control};
+        BOOST_CHECK(!VerifyScript(CScript(), spk_short, &w, pq_flags, checker, &err));
+        BOOST_CHECK_EQUAL(FormatScriptError(err), FormatScriptError(SCRIPT_ERR_PQSIG_SIZE));
+    }
+
+    // Scheme byte 1 (ML-DSA-44) is part of the design but not verifiable in
+    // this build yet, so such leaves are unspendable rather than
+    // anyone-can-spend. Wiring the scheme up turns this case into a valid
+    // spend.
+    {
+        const std::vector<unsigned char> ml_pubkey(pqc::ML_DSA_44_PUBKEY_SIZE, 0x00);
+        HashWriter ml_hasher{TaggedHash("PQPubKeyHash")};
+        ml_hasher.write(MakeByteSpan(ml_pubkey));
+        const uint256 ml_pubkey_hash{ml_hasher.GetSHA256()};
+        std::vector<unsigned char> ml_commitment{static_cast<unsigned char>(pqc::Scheme::ML_DSA_44)};
+        ml_commitment.insert(ml_commitment.end(), ml_pubkey_hash.begin(), ml_pubkey_hash.end());
+        const CScript leaf_ml = CScript() << ml_commitment << OP_CHECKPQSIG;
+        const uint256 hash_ml = ComputeTapleafHash(TAPROOT_LEAF_TAPSCRIPT, leaf_ml);
+        const CScript spk_ml = CScript() << OP_2 << ToByteVector(ComputeTapbranchHash(hash_ml, hash_b));
+        CScriptWitness w;
+        w.stack = {std::vector<unsigned char>(pqc::ML_DSA_44_SIG_SIZE, 0x00),
+                   ml_pubkey,
+                   {leaf_ml.begin(), leaf_ml.end()}, control};
+        BOOST_CHECK(!VerifyScript(CScript(), spk_ml, &w, pq_flags, checker, &err));
+        BOOST_CHECK_EQUAL(FormatScriptError(err), FormatScriptError(SCRIPT_ERR_PQSIG));
+    }
+
+    // The larger element bound follows the textual presence of the opcode,
+    // not its execution: the scan runs over the whole script before any
+    // branch is evaluated.
+    {
+        const CScript leaf_branch = CScript() << OP_0 << OP_IF << commitment << OP_CHECKPQSIG << OP_ENDIF << OP_DROP << OP_1;
+        const uint256 hash_branch = ComputeTapleafHash(TAPROOT_LEAF_TAPSCRIPT, leaf_branch);
+        const CScript spk_branch = CScript() << OP_2 << ToByteVector(ComputeTapbranchHash(hash_branch, hash_b));
+        CScriptWitness w;
+        w.stack = {std::vector<unsigned char>(1000, 0x00), {leaf_branch.begin(), leaf_branch.end()}, control};
+        BOOST_CHECK(VerifyScript(CScript(), spk_branch, &w, pq_flags, checker, &err));
+        BOOST_CHECK_MESSAGE(err == SCRIPT_ERR_OK, ScriptErrorString(err));
+    }
+
+    // The opcode is a tapscript rule, so it works the same way in a BIP 341
+    // taproot script path. A P2TRv2-style output type reusing this opcode
+    // needs no separate verification code.
+    {
+        TaprootBuilder builder;
+        builder.Add(0, leaf_pq, TAPROOT_LEAF_TAPSCRIPT);
+        builder.Finalize(XOnlyPubKey::NUMS_H);
+        const CScript spk_tr = GetScriptForDestination(builder.GetOutput());
+        const CTransaction credit_tr{BuildCreditingTransaction(spk_tr, amount)};
+        CMutableTransaction spend_tr = BuildSpendingTransaction(CScript(), CScriptWitness(), credit_tr);
+        spend_tr.vin[0].scriptWitness.stack.push_back({});
+        PrecomputedTransactionData txdata_tr;
+        txdata_tr.Init(spend_tr, {credit_tr.vout[0]});
+        const MutableTransactionSignatureChecker checker_tr{&spend_tr, 0, amount, txdata_tr, MissingDataBehavior::FAIL};
+
+        ScriptExecutionData execdata;
+        execdata.m_annex_init = true;
+        execdata.m_annex_present = false;
+        execdata.m_tapleaf_hash_init = true;
+        execdata.m_tapleaf_hash = hash_pq;
+        execdata.m_codeseparator_pos_init = true;
+        execdata.m_codeseparator_pos = 0xFFFFFFFF;
+        uint256 sighash;
+        BOOST_REQUIRE(SignatureHashSchnorr(sighash, execdata, spend_tr, 0, SIGHASH_DEFAULT, SigVersion::TAPSCRIPT, txdata_tr, MissingDataBehavior::FAIL));
+        std::vector<unsigned char> sig_tr(pqc::SLH_DSA_SHA2_128S_SIG_SIZE);
+        size_t sig_tr_len{0};
+        BOOST_REQUIRE(pqc::Sign(pqc::Scheme::SLH_DSA_SHA2_128S, sig_tr.data(), &sig_tr_len, sighash.begin(), pq_seckey.data()));
+
+        const auto spenddata = builder.GetSpendData();
+        const auto& control_tr = *spenddata.scripts.at({leaf_pq_bytes, TAPROOT_LEAF_TAPSCRIPT}).begin();
+        CScriptWitness w;
+        w.stack = {sig_tr, pq_pubkey, leaf_pq_bytes, control_tr};
+        BOOST_CHECK(VerifyScript(CScript(), spk_tr, &w, pq_flags, checker_tr, &err));
+        BOOST_CHECK_MESSAGE(err == SCRIPT_ERR_OK, ScriptErrorString(err));
+    }
+
+    // The BIP 342 weight budget applies. A leaf that repeats the check over
+    // the same signature funds no extra budget, so enough repetitions run
+    // the input out of it. At the current provisional cost, the witness
+    // holding one 7856-byte signature funds eight checks but not nine.
+    {
+        const auto repeat_leaf = [&](int n) {
+            CScript s;
+            for (int j = 0; j < n; ++j) {
+                s = s << OP_2DUP << commitment << OP_CHECKPQSIG << OP_VERIFY;
+            }
+            return s << OP_2DROP << OP_1;
+        };
+        const auto spend_repeats = [&](int n) {
+            const CScript leaf = repeat_leaf(n);
+            const uint256 hash_leaf = ComputeTapleafHash(TAPROOT_LEAF_TAPSCRIPT, leaf);
+            const CScript spk_rep = CScript() << OP_2 << ToByteVector(ComputeTapbranchHash(hash_leaf, hash_b));
+            const CTransaction credit_r{BuildCreditingTransaction(spk_rep, amount)};
+            CMutableTransaction spend_r = BuildSpendingTransaction(CScript(), CScriptWitness(), credit_r);
+            spend_r.vin[0].scriptWitness.stack.push_back({});
+            PrecomputedTransactionData txdata_r;
+            txdata_r.Init(spend_r, {credit_r.vout[0]});
+            const MutableTransactionSignatureChecker checker_r{&spend_r, 0, amount, txdata_r, MissingDataBehavior::FAIL};
+
+            ScriptExecutionData execdata;
+            execdata.m_annex_init = true;
+            execdata.m_annex_present = false;
+            execdata.m_tapleaf_hash_init = true;
+            execdata.m_tapleaf_hash = hash_leaf;
+            execdata.m_codeseparator_pos_init = true;
+            execdata.m_codeseparator_pos = 0xFFFFFFFF;
+            uint256 sighash;
+            BOOST_REQUIRE(SignatureHashSchnorr(sighash, execdata, spend_r, 0, SIGHASH_DEFAULT, SigVersion::TAPSCRIPT, txdata_r, MissingDataBehavior::FAIL));
+            std::vector<unsigned char> sig(pqc::SLH_DSA_SHA2_128S_SIG_SIZE);
+            size_t sig_len{0};
+            BOOST_REQUIRE(pqc::Sign(pqc::Scheme::SLH_DSA_SHA2_128S, sig.data(), &sig_len, sighash.begin(), pq_seckey.data()));
+
+            CScriptWitness w;
+            w.stack = {sig, pq_pubkey, {leaf.begin(), leaf.end()}, control};
+            return VerifyScript(CScript(), spk_rep, &w, pq_flags, checker_r, &err);
+        };
+        BOOST_CHECK(spend_repeats(8));
+        BOOST_CHECK_MESSAGE(err == SCRIPT_ERR_OK, ScriptErrorString(err));
+        BOOST_CHECK(!spend_repeats(9));
+        BOOST_CHECK_EQUAL(FormatScriptError(err), FormatScriptError(SCRIPT_ERR_TAPSCRIPT_VALIDATION_WEIGHT));
+    }
+
+    // Fewer than three stack elements.
+    {
+        CScriptWitness w;
+        w.stack = {pq_pubkey, leaf_pq_bytes, control};
+        BOOST_CHECK(!VerifyScript(CScript(), spk, &w, pq_flags, checker, &err));
+        BOOST_CHECK_EQUAL(FormatScriptError(err), FormatScriptError(SCRIPT_ERR_INVALID_STACK_OPERATION));
+    }
+
+    // An element larger than the PQ bound is rejected even in a PQ leaf.
+    {
+        CScriptWitness w;
+        w.stack = {std::vector<unsigned char>(PQ_MAX_ELEMENT_SIZE + 1, 0x00), pq_pubkey, leaf_pq_bytes, control};
+        BOOST_CHECK(!VerifyScript(CScript(), spk, &w, pq_flags, checker, &err));
+        BOOST_CHECK_EQUAL(FormatScriptError(err), FormatScriptError(SCRIPT_ERR_PUSH_SIZE));
+    }
+
+    // A leaf without OP_CHECKPQSIG keeps the 520-byte element limit.
+    {
+        const CScript leaf_plain = CScript() << OP_DROP << OP_1;
+        const uint256 hash_plain = ComputeTapleafHash(TAPROOT_LEAF_TAPSCRIPT, leaf_plain);
+        const CScript spk_plain = CScript() << OP_2 << ToByteVector(ComputeTapbranchHash(hash_plain, hash_b));
+        CScriptWitness w;
+        w.stack = {std::vector<unsigned char>(MAX_SCRIPT_ELEMENT_SIZE + 1, 0x00), {leaf_plain.begin(), leaf_plain.end()}, control};
+        BOOST_CHECK(!VerifyScript(CScript(), spk_plain, &w, pq_flags, checker, &err));
+        BOOST_CHECK_EQUAL(FormatScriptError(err), FormatScriptError(SCRIPT_ERR_PUSH_SIZE));
+    }
+
+    // Another OP_SUCCESSx in the same leaf still short-circuits to success,
+    // skipping the PQ check entirely (the footgun recorded in the design note).
+    {
+        const CScript leaf_mixed = CScript() << commitment << OP_CHECKPQSIG << static_cast<opcodetype>(188);
+        const uint256 hash_mixed = ComputeTapleafHash(TAPROOT_LEAF_TAPSCRIPT, leaf_mixed);
+        const CScript spk_mixed = CScript() << OP_2 << ToByteVector(ComputeTapbranchHash(hash_mixed, hash_b));
+        CScriptWitness w;
+        w.stack = {{}, {}, {leaf_mixed.begin(), leaf_mixed.end()}, control};
+        BOOST_CHECK(VerifyScript(CScript(), spk_mixed, &w, pq_flags, checker, &err));
+        BOOST_CHECK_MESSAGE(err == SCRIPT_ERR_OK, ScriptErrorString(err));
+    }
+
+    // Hybrid leaf: the same leaf requires both a PQ and an EC signature.
+    {
+        KeyData keys;
+        const XOnlyPubKey xpk{keys.pubkey0C};
+        const CScript leaf_hybrid = CScript() << commitment << OP_CHECKPQSIG << OP_VERIFY << ToByteVector(xpk) << OP_CHECKSIG;
+        const uint256 hash_hybrid = ComputeTapleafHash(TAPROOT_LEAF_TAPSCRIPT, leaf_hybrid);
+        const CScript spk_hybrid = CScript() << OP_2 << ToByteVector(ComputeTapbranchHash(hash_hybrid, hash_b));
+        const CTransaction credit_h{BuildCreditingTransaction(spk_hybrid, amount)};
+        CMutableTransaction spend_h = BuildSpendingTransaction(CScript(), CScriptWitness(), credit_h);
+        spend_h.vin[0].scriptWitness.stack.push_back({});
+        PrecomputedTransactionData txdata_h;
+        txdata_h.Init(spend_h, {credit_h.vout[0]});
+        const MutableTransactionSignatureChecker checker_h{&spend_h, 0, amount, txdata_h, MissingDataBehavior::FAIL};
+
+        ScriptExecutionData execdata;
+        execdata.m_annex_init = true;
+        execdata.m_annex_present = false;
+        execdata.m_tapleaf_hash_init = true;
+        execdata.m_tapleaf_hash = hash_hybrid;
+        execdata.m_codeseparator_pos_init = true;
+        execdata.m_codeseparator_pos = 0xFFFFFFFF;
+        uint256 sighash;
+        BOOST_REQUIRE(SignatureHashSchnorr(sighash, execdata, spend_h, 0, SIGHASH_DEFAULT, SigVersion::TAPSCRIPT, txdata_h, MissingDataBehavior::FAIL));
+        std::vector<unsigned char> pq_sig(pqc::SLH_DSA_SHA2_128S_SIG_SIZE);
+        size_t pq_sig_len{0};
+        BOOST_REQUIRE(pqc::Sign(pqc::Scheme::SLH_DSA_SHA2_128S, pq_sig.data(), &pq_sig_len, sighash.begin(), pq_seckey.data()));
+        std::vector<unsigned char> ec_sig(64);
+        BOOST_REQUIRE(keys.key0C.SignSchnorr(sighash, ec_sig, nullptr, uint256()));
+
+        CScriptWitness w;
+        w.stack = {ec_sig, pq_sig, pq_pubkey, {leaf_hybrid.begin(), leaf_hybrid.end()}, control};
+        BOOST_CHECK(VerifyScript(CScript(), spk_hybrid, &w, pq_flags, checker_h, &err));
         BOOST_CHECK_MESSAGE(err == SCRIPT_ERR_OK, ScriptErrorString(err));
     }
 }
