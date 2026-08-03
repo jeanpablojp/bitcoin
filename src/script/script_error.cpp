@@ -115,6 +115,16 @@ std::string ScriptErrorString(const ScriptError serror)
             return "Empty public key in tapscript";
         case SCRIPT_ERR_P2MR_WRONG_CONTROL_BYTE:
             return "P2MR control byte low bit must be set";
+        case SCRIPT_ERR_PQSIG_SCHEME:
+            return "Unknown PQ signature scheme";
+        case SCRIPT_ERR_PQSIG_SIZE:
+            return "PQ commitment, public key or signature has the wrong size";
+        case SCRIPT_ERR_PQSIG_HASHTYPE:
+            return "Invalid PQ signature hash type";
+        case SCRIPT_ERR_PQSIG_PUBKEYHASH:
+            return "PQ public key does not match the committed hash";
+        case SCRIPT_ERR_PQSIG:
+            return "Invalid PQ signature";
         case SCRIPT_ERR_OP_CODESEPARATOR:
             return "Using OP_CODESEPARATOR in non-witness script";
         case SCRIPT_ERR_SIG_FINDANDDELETE:

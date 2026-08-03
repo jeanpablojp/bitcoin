@@ -2277,10 +2277,12 @@ script_verify_flags GetBlockScriptFlags(const CBlockIndex& block_index, const Ch
         flags = it->second;
     }
 
-    // P2MR (BIP 360) is a draft with no activation parameters, so its rules
-    // are enforced in block validation only on regtest.
+    // P2MR (BIP 360) and its draft PQ signature opcode have no activation
+    // parameters, so their rules are enforced in block validation only on
+    // regtest.
     if (chainman.GetParams().GetChainType() == ChainType::REGTEST) {
         flags |= SCRIPT_VERIFY_P2MR;
+        flags |= SCRIPT_VERIFY_PQSIG;
     }
 
     // Enforce the DERSIG (BIP66) rule

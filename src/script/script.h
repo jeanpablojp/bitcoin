@@ -64,6 +64,18 @@ static constexpr int64_t VALIDATION_WEIGHT_PER_SIGOP_PASSED{50};
 // How much weight budget is added to the witness size (Tapscript only, see BIP 342).
 static constexpr int64_t VALIDATION_WEIGHT_OFFSET{50};
 
+// Maximum initial witness stack element size in tapscript leaves whose script
+// contains OP_CHECKPQSIG: the smallest power of two covering the largest
+// admitted element, a 7857-byte SLH-DSA signature with an explicit sighash
+// byte. Draft rule for the BIP 360 PQ signature opcode prototype; all other
+// scripts keep MAX_SCRIPT_ELEMENT_SIZE.
+static constexpr unsigned int PQ_MAX_ELEMENT_SIZE{8192};
+
+// Validation weight per passing OP_CHECKPQSIG, currently the same for every
+// scheme (draft). PROVISIONAL: a real value has to come from measured
+// verification time relative to a Schnorr sigop, and may differ per scheme.
+static constexpr int64_t VALIDATION_WEIGHT_PQSIG{1000};
+
 template <typename T>
 std::vector<unsigned char> ToByteVector(const T& in)
 {
@@ -209,6 +221,11 @@ enum opcodetype
 
     // Opcode added by BIP 342 (Tapscript)
     OP_CHECKSIGADD = 0xba,
+
+    // PQ signature check, the piece BIP 360 leaves to a companion BIP:
+    // a redefinition of OP_SUCCESS187, only meaningful in tapscript
+    // leaves under SCRIPT_VERIFY_PQSIG (draft).
+    OP_CHECKPQSIG = 0xbb,
 
     OP_INVALIDOPCODE = 0xff,
 };

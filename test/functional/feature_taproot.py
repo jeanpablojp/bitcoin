@@ -1185,6 +1185,12 @@ def spenders_taproot_active():
         opcode = CScriptOp(opval)
         if not is_op_success(opcode):
             continue
+        if opval == 0xbb:
+            # OP_SUCCESS187 is redefined as OP_CHECKPQSIG under
+            # SCRIPT_VERIFY_PQSIG, which regtest block validation applies
+            # (draft companion to BIP 360), so it no longer behaves as an
+            # OP_SUCCESS in these cases.
+            continue
         scripts = [
             ("bare_success", CScript([opcode])),
             ("bare_nop", CScript([OP_NOP])),

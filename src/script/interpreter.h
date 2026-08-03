@@ -8,6 +8,7 @@
 
 #include <consensus/amount.h>
 #include <hash.h>
+#include <pqc/pqc_verify.h>
 #include <primitives/transaction.h>
 #include <script/script.h>
 #include <script/script_error.h>
@@ -150,6 +151,11 @@ enum class script_verify_flag_name : uint8_t {
     // The BIP defines no activation parameters, so block validation only
     // applies this flag on regtest; see GetBlockScriptFlags().
     SCRIPT_VERIFY_P2MR,
+
+    // OP_CHECKPQSIG: PQ signature verification in tapscript leaves via a
+    // redefinition of OP_SUCCESS187 (draft companion to BIP 360). Applied
+    // in block validation only on regtest, like SCRIPT_VERIFY_P2MR.
+    SCRIPT_VERIFY_PQSIG,
 
     // Constants to point to the highest flag in use. Add new flags above this line.
     //
@@ -296,6 +302,13 @@ public:
         return false;
     }
 
+    //! Verify a PQ signature (OP_CHECKPQSIG, draft) over the tapscript
+    //! sighash. `sig` still carries the optional trailing sighash byte.
+    virtual bool CheckPQSignature(std::span<const unsigned char> sig, std::span<const unsigned char> pubkey, pqc::Scheme scheme, SigVersion sigversion, ScriptExecutionData& execdata, ScriptError* serror = nullptr) const
+    {
+        return false;
+    }
+
     virtual bool CheckLockTime(const CScriptNum& nLockTime) const
     {
          return false;
@@ -335,12 +348,19 @@ private:
 protected:
     virtual bool VerifyECDSASignature(const std::vector<unsigned char>& vchSig, const CPubKey& vchPubKey, const uint256& sighash) const;
     virtual bool VerifySchnorrSignature(std::span<const unsigned char> sig, const XOnlyPubKey& pubkey, const uint256& sighash) const;
+    //! Draft PQ verification. Kept virtual for the same reason as the two
+    //! above: CachingTransactionSignatureChecker overrides those to consult
+    //! the signature cache, and PQ verification (by far the most expensive
+    //! of the three) will want the same treatment before this leaves
+    //! regtest. Not wired to the cache yet.
+    virtual bool VerifyPQSignature(pqc::Scheme scheme, std::span<const unsigned char> sig, std::span<const unsigned char> pubkey, const uint256& sighash) const;
 
 public:
     GenericTransactionSignatureChecker(const T* txToIn, unsigned int nInIn, const CAmount& amountIn, MissingDataBehavior mdb) : txTo(txToIn), m_mdb(mdb), nIn(nInIn), amount(amountIn), txdata(nullptr) {}
     GenericTransactionSignatureChecker(const T* txToIn, unsigned int nInIn, const CAmount& amountIn, const PrecomputedTransactionData& txdataIn, MissingDataBehavior mdb) : txTo(txToIn), m_mdb(mdb), nIn(nInIn), amount(amountIn), txdata(&txdataIn) {}
     bool CheckECDSASignature(const std::vector<unsigned char>& scriptSig, const std::vector<unsigned char>& vchPubKey, const CScript& scriptCode, SigVersion sigversion) const override;
     bool CheckSchnorrSignature(std::span<const unsigned char> sig, std::span<const unsigned char> pubkey, SigVersion sigversion, ScriptExecutionData& execdata, ScriptError* serror = nullptr) const override;
+    bool CheckPQSignature(std::span<const unsigned char> sig, std::span<const unsigned char> pubkey, pqc::Scheme scheme, SigVersion sigversion, ScriptExecutionData& execdata, ScriptError* serror = nullptr) const override;
     bool CheckLockTime(const CScriptNum& nLockTime) const override;
     bool CheckSequence(const CScriptNum& nSequence) const override;
 };
@@ -364,6 +384,11 @@ public:
     bool CheckSchnorrSignature(std::span<const unsigned char> sig, std::span<const unsigned char> pubkey, SigVersion sigversion, ScriptExecutionData& execdata, ScriptError* serror = nullptr) const override
     {
         return m_checker.CheckSchnorrSignature(sig, pubkey, sigversion, execdata, serror);
+    }
+
+    bool CheckPQSignature(std::span<const unsigned char> sig, std::span<const unsigned char> pubkey, pqc::Scheme scheme, SigVersion sigversion, ScriptExecutionData& execdata, ScriptError* serror = nullptr) const override
+    {
+        return m_checker.CheckPQSignature(sig, pubkey, scheme, sigversion, execdata, serror);
     }
 
     bool CheckLockTime(const CScriptNum& nLockTime) const override

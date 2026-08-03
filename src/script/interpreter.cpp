@@ -394,6 +394,56 @@ static bool EvalChecksigTapscript(const valtype& sig, const valtype& pubkey, Scr
     return true;
 }
 
+//! Tagged hasher for the OP_CHECKPQSIG pubkey commitment (draft).
+static const HashWriter HASHER_PQPUBKEYHASH{TaggedHash("PQPubKeyHash")};
+
+/** Helper for OP_CHECKPQSIG (draft). Mirrors the EvalChecksigTapscript
+ *  structure: empty signature sets success=false without consuming budget;
+ *  every other rule violation fails the script outright. */
+static bool EvalCheckPQSig(const valtype& sig, const valtype& pubkey, const valtype& commitment, ScriptExecutionData& execdata, const BaseSignatureChecker& checker, SigVersion sigversion, ScriptError* serror, bool& success)
+{
+    assert(sigversion == SigVersion::TAPSCRIPT);
+
+    // The commitment is validated whether or not a signature is present, so
+    // a malformed leaf script cannot be spent through the empty-sig path.
+    if (commitment.size() != 33) return set_error(serror, SCRIPT_ERR_PQSIG_SIZE);
+    if (!pqc::IsKnownScheme(commitment[0])) return set_error(serror, SCRIPT_ERR_PQSIG_SCHEME);
+    const pqc::Scheme scheme{commitment[0]};
+
+    success = !sig.empty();
+    if (!success) return true;
+
+    // Same sigops/witnesssize ratio test as EvalChecksigTapscript. The cost
+    // is provisional and currently shared by all schemes; calibration into
+    // per-scheme constants is a later task.
+    assert(execdata.m_validation_weight_left_init);
+    execdata.m_validation_weight_left -= VALIDATION_WEIGHT_PQSIG;
+    if (execdata.m_validation_weight_left < 0) {
+        return set_error(serror, SCRIPT_ERR_TAPSCRIPT_VALIDATION_WEIGHT);
+    }
+
+    // Exact sizes only: base signature size, or base + 1 with an explicit
+    // sighash byte. The 0x00 byte is rejected in CheckPQSignature, the same
+    // rule BIP 341 applies to 65-byte Schnorr signatures.
+    if (pubkey.size() != pqc::PubKeySize(scheme)) return set_error(serror, SCRIPT_ERR_PQSIG_SIZE);
+    if (sig.size() != pqc::SigSize(scheme) && sig.size() != pqc::SigSize(scheme) + 1) {
+        return set_error(serror, SCRIPT_ERR_PQSIG_SIZE);
+    }
+
+    // The leaf commits to H(pubkey), not the pubkey itself.
+    HashWriter ss{HASHER_PQPUBKEYHASH};
+    ss.write(MakeByteSpan(pubkey));
+    const uint256 pubkey_hash{ss.GetSHA256()};
+    if (!std::equal(pubkey_hash.begin(), pubkey_hash.end(), commitment.begin() + 1)) {
+        return set_error(serror, SCRIPT_ERR_PQSIG_PUBKEYHASH);
+    }
+
+    if (!checker.CheckPQSignature(sig, pubkey, scheme, sigversion, execdata, serror)) {
+        return false; // serror is set
+    }
+    return true;
+}
+
 /** Helper for OP_CHECKSIG, OP_CHECKSIGVERIFY, and (in Tapscript) OP_CHECKSIGADD.
  *
  * A return value of false means the script fails entirely. When true is returned, the
@@ -1112,6 +1162,30 @@ bool EvalScript(std::vector<std::vector<unsigned char> >& stack, const CScript& 
                 }
                 break;
 
+                case OP_CHECKPQSIG:
+                {
+                    // Only reachable in tapscript with SCRIPT_VERIFY_PQSIG:
+                    // without the flag, the OP_SUCCESSx scan in
+                    // ExecuteWitnessScript already succeeded, and in legacy or
+                    // witness v0 scripts 0xbb stays an invalid opcode.
+                    if (sigversion != SigVersion::TAPSCRIPT || !(flags & SCRIPT_VERIFY_PQSIG)) return set_error(serror, SCRIPT_ERR_BAD_OPCODE);
+
+                    // (sig pubkey commitment -- bool)
+                    if (stack.size() < 3) return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
+
+                    const valtype& sig = stacktop(-3);
+                    const valtype& pubkey = stacktop(-2);
+                    const valtype& commitment = stacktop(-1);
+
+                    bool success = false;
+                    if (!EvalCheckPQSig(sig, pubkey, commitment, execdata, checker, sigversion, serror, success)) return false;
+                    popstack(stack);
+                    popstack(stack);
+                    popstack(stack);
+                    stack.push_back(success ? vchTrue : vchFalse);
+                }
+                break;
+
                 case OP_CHECKMULTISIG:
                 case OP_CHECKMULTISIGVERIFY:
                 {
@@ -1704,6 +1778,12 @@ bool GenericTransactionSignatureChecker<T>::VerifySchnorrSignature(std::span<con
 }
 
 template <class T>
+bool GenericTransactionSignatureChecker<T>::VerifyPQSignature(pqc::Scheme scheme, std::span<const unsigned char> sig, std::span<const unsigned char> pubkey, const uint256& sighash) const
+{
+    return pqc::Verify(scheme, pubkey.data(), pubkey.size(), sighash.begin(), sig.data(), sig.size());
+}
+
+template <class T>
 bool GenericTransactionSignatureChecker<T>::CheckECDSASignature(const std::vector<unsigned char>& vchSigIn, const std::vector<unsigned char>& vchPubKey, const CScript& scriptCode, SigVersion sigversion) const
 {
     CPubKey pubkey(vchPubKey);
@@ -1753,6 +1833,28 @@ bool GenericTransactionSignatureChecker<T>::CheckSchnorrSignature(std::span<cons
         return set_error(serror, SCRIPT_ERR_SCHNORR_SIG_HASHTYPE);
     }
     if (!VerifySchnorrSignature(sig, pubkey, sighash)) return set_error(serror, SCRIPT_ERR_SCHNORR_SIG);
+    return true;
+}
+
+template <class T>
+bool GenericTransactionSignatureChecker<T>::CheckPQSignature(std::span<const unsigned char> sig, std::span<const unsigned char> pubkey, pqc::Scheme scheme, SigVersion sigversion, ScriptExecutionData& execdata, ScriptError* serror) const
+{
+    assert(sigversion == SigVersion::TAPSCRIPT);
+    // The caller (EvalCheckPQSig) has already enforced the exact per-scheme
+    // pubkey size and that sig is base or base+1 bytes long.
+    uint8_t hashtype = SIGHASH_DEFAULT;
+    if (sig.size() == pqc::SigSize(scheme) + 1) {
+        hashtype = SpanPopBack(sig);
+        if (hashtype == SIGHASH_DEFAULT) return set_error(serror, SCRIPT_ERR_PQSIG_HASHTYPE);
+    }
+    uint256 sighash;
+    if (!this->txdata) return HandleMissingData(m_mdb);
+    if (!SignatureHashSchnorr(sighash, execdata, *txTo, nIn, hashtype, sigversion, *this->txdata, m_mdb)) {
+        return set_error(serror, SCRIPT_ERR_PQSIG_HASHTYPE);
+    }
+    if (!VerifyPQSignature(scheme, sig, pubkey, sighash)) {
+        return set_error(serror, SCRIPT_ERR_PQSIG);
+    }
     return true;
 }
 
@@ -1848,6 +1950,7 @@ static bool ExecuteWitnessScript(const std::span<const valtype>& stack_span, con
 {
     std::vector<valtype> stack{stack_span.begin(), stack_span.end()};
 
+    bool has_pqsig = false;
     if (sigversion == SigVersion::TAPSCRIPT) {
         // OP_SUCCESSx processing overrides everything, including stack element size limits
         CScript::const_iterator pc = exec_script.begin();
@@ -1858,6 +1961,14 @@ static bool ExecuteWitnessScript(const std::span<const valtype>& stack_span, con
                 return set_error(serror, SCRIPT_ERR_BAD_OPCODE);
             }
             // New opcodes will be listed here. May use a different sigversion to modify existing opcodes.
+            if (opcode == OP_CHECKPQSIG && (flags & SCRIPT_VERIFY_PQSIG)) {
+                // Redefined OP_SUCCESS187 (draft): executes as OP_CHECKPQSIG
+                // instead of succeeding unconditionally, and lifts the initial
+                // stack element limit to PQ_MAX_ELEMENT_SIZE below. Any other
+                // OP_SUCCESSx in the script still succeeds unconditionally.
+                has_pqsig = true;
+                continue;
+            }
             if (IsOpSuccess(opcode)) {
                 if (flags & SCRIPT_VERIFY_DISCOURAGE_OP_SUCCESS) {
                     return set_error(serror, SCRIPT_ERR_DISCOURAGE_OP_SUCCESS);
@@ -1870,9 +1981,12 @@ static bool ExecuteWitnessScript(const std::span<const valtype>& stack_span, con
         if (stack.size() > MAX_STACK_SIZE) return set_error(serror, SCRIPT_ERR_STACK_SIZE);
     }
 
-    // Disallow stack item size > MAX_SCRIPT_ELEMENT_SIZE in witness stack
+    // Disallow stack item size > MAX_SCRIPT_ELEMENT_SIZE in witness stack.
+    // Leaves containing OP_CHECKPQSIG carry multi-kB signature elements and
+    // get the larger PQ bound instead (draft rule; see PQ_MAX_ELEMENT_SIZE).
+    const unsigned int max_elem_size{has_pqsig ? PQ_MAX_ELEMENT_SIZE : MAX_SCRIPT_ELEMENT_SIZE};
     for (const valtype& elem : stack) {
-        if (elem.size() > MAX_SCRIPT_ELEMENT_SIZE) return set_error(serror, SCRIPT_ERR_PUSH_SIZE);
+        if (elem.size() > max_elem_size) return set_error(serror, SCRIPT_ERR_PUSH_SIZE);
     }
 
     // Run the script interpreter.
@@ -2267,6 +2381,7 @@ const std::map<std::string, script_verify_flag_name>& ScriptFlagNamesToEnum()
         FLAG_NAME(CONST_SCRIPTCODE),
         FLAG_NAME(TAPROOT),
         FLAG_NAME(P2MR),
+        FLAG_NAME(PQSIG),
         FLAG_NAME(DISCOURAGE_UPGRADABLE_PUBKEYTYPE),
         FLAG_NAME(DISCOURAGE_OP_SUCCESS),
         FLAG_NAME(DISCOURAGE_UPGRADABLE_TAPROOT_VERSION),
