@@ -32,6 +32,7 @@
 #include <boost/test/unit_test.hpp>
 
 #include <cstdint>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -1917,28 +1918,6 @@ BOOST_AUTO_TEST_CASE(script_pqsig_slh_dsa)
         BOOST_CHECK_EQUAL(FormatScriptError(err), FormatScriptError(SCRIPT_ERR_PQSIG_SIZE));
     }
 
-    // Scheme byte 1 (ML-DSA-44) is part of the design but not verifiable in
-    // this build yet, so such leaves are unspendable rather than
-    // anyone-can-spend. Wiring the scheme up turns this case into a valid
-    // spend.
-    {
-        const std::vector<unsigned char> ml_pubkey(pqc::ML_DSA_44_PUBKEY_SIZE, 0x00);
-        HashWriter ml_hasher{TaggedHash("PQPubKeyHash")};
-        ml_hasher.write(MakeByteSpan(ml_pubkey));
-        const uint256 ml_pubkey_hash{ml_hasher.GetSHA256()};
-        std::vector<unsigned char> ml_commitment{static_cast<unsigned char>(pqc::Scheme::ML_DSA_44)};
-        ml_commitment.insert(ml_commitment.end(), ml_pubkey_hash.begin(), ml_pubkey_hash.end());
-        const CScript leaf_ml = CScript() << ml_commitment << OP_CHECKPQSIG;
-        const uint256 hash_ml = ComputeTapleafHash(TAPROOT_LEAF_TAPSCRIPT, leaf_ml);
-        const CScript spk_ml = CScript() << OP_2 << ToByteVector(ComputeTapbranchHash(hash_ml, hash_b));
-        CScriptWitness w;
-        w.stack = {std::vector<unsigned char>(pqc::ML_DSA_44_SIG_SIZE, 0x00),
-                   ml_pubkey,
-                   {leaf_ml.begin(), leaf_ml.end()}, control};
-        BOOST_CHECK(!VerifyScript(CScript(), spk_ml, &w, pq_flags, checker, &err));
-        BOOST_CHECK_EQUAL(FormatScriptError(err), FormatScriptError(SCRIPT_ERR_PQSIG));
-    }
-
     // The larger element bound follows the textual presence of the opcode,
     // not its execution: the scan runs over the whole script before any
     // branch is evaluated.
@@ -2105,6 +2084,281 @@ BOOST_AUTO_TEST_CASE(script_pqsig_slh_dsa)
         CScriptWitness w;
         w.stack = {ec_sig, pq_sig, pq_pubkey, {leaf_hybrid.begin(), leaf_hybrid.end()}, control};
         BOOST_CHECK(VerifyScript(CScript(), spk_hybrid, &w, pq_flags, checker_h, &err));
+        BOOST_CHECK_MESSAGE(err == SCRIPT_ERR_OK, ScriptErrorString(err));
+    }
+}
+
+//! The hook the vendored code draws from. Declared here so the stream it
+//! produces can be checked directly; nothing else in the tree calls it.
+extern "C" void randombytes(uint8_t* out, size_t outlen);
+
+/** The entropy stream behind key generation and signing. Today's callers
+ *  never ask for more than one block at a time, so a stream that repeated
+ *  itself would go unnoticed until something asked for more. */
+BOOST_AUTO_TEST_CASE(pqsig_entropy_stream)
+{
+    const std::vector<unsigned char> seed(32, 0x6d);
+    pqc::SetDeterministicEntropy(seed.data(), seed.size());
+
+    // A long draw must not repeat a block.
+    std::vector<unsigned char> stream(160);
+    randombytes(stream.data(), stream.size());
+    std::set<std::vector<unsigned char>> blocks;
+    for (size_t i = 0; i + 32 <= stream.size(); i += 32) {
+        blocks.emplace(stream.begin() + i, stream.begin() + i + 32);
+    }
+    BOOST_CHECK_EQUAL(blocks.size(), 5U);
+
+    // Successive draws continue the stream rather than restart it.
+    pqc::SetDeterministicEntropy(seed.data(), seed.size());
+    std::vector<unsigned char> first(32), second(32);
+    randombytes(first.data(), first.size());
+    randombytes(second.data(), second.size());
+    BOOST_CHECK(first != second);
+    BOOST_CHECK(std::equal(first.begin(), first.end(), stream.begin()));
+    BOOST_CHECK(std::equal(second.begin(), second.end(), stream.begin() + 32));
+
+    // Reinstalling the seed rewinds it, which is what makes signing
+    // reproducible.
+    pqc::SetDeterministicEntropy(seed.data(), seed.size());
+    std::vector<unsigned char> again(32);
+    randombytes(again.data(), again.size());
+    BOOST_CHECK(again == first);
+
+    // A different seed gives a different stream.
+    const std::vector<unsigned char> other_seed(32, 0x6e);
+    pqc::SetDeterministicEntropy(other_seed.data(), other_seed.size());
+    std::vector<unsigned char> other(32);
+    randombytes(other.data(), other.size());
+    BOOST_CHECK(other != first);
+}
+
+/** The PQ wrapper's own contract, which the opcode relies on but does not
+ *  exercise: the opcode enforces exact sizes before calling, so nothing else
+ *  covers what Verify() does when handed the wrong ones. */
+BOOST_AUTO_TEST_CASE(pqsig_verify_sizes)
+{
+    const std::vector<unsigned char> seed(pqc::SLH_DSA_SHA2_128S_SEED_SIZE, 0x5c);
+    std::vector<unsigned char> pubkey(pqc::SLH_DSA_SHA2_128S_PUBKEY_SIZE);
+    std::vector<unsigned char> seckey(pqc::SLH_DSA_SHA2_128S_SECKEY_SIZE);
+    BOOST_REQUIRE(pqc::SeedKeypair(pqc::Scheme::SLH_DSA_SHA2_128S, pubkey.data(), seckey.data(), seed.data(), seed.size()));
+
+    const std::vector<unsigned char> msg(32, 0x11);
+    std::vector<unsigned char> sig(pqc::SLH_DSA_SHA2_128S_SIG_SIZE);
+    size_t sig_len{0};
+    BOOST_REQUIRE(pqc::Sign(pqc::Scheme::SLH_DSA_SHA2_128S, sig.data(), &sig_len, msg.data(), seckey.data()));
+
+    const auto verify = [&](const std::vector<unsigned char>& pk, const std::vector<unsigned char>& s) {
+        return pqc::Verify(pqc::Scheme::SLH_DSA_SHA2_128S, pk.data(), pk.size(), msg.data(), s.data(), s.size());
+    };
+    BOOST_CHECK(verify(pubkey, sig));
+
+    // Every size other than the scheme's own is refused, including the
+    // trailing-sighash-byte length the opcode strips before calling.
+    for (const int delta : {-1, 1}) {
+        auto short_sig = sig;
+        short_sig.resize(sig.size() + delta, 0x00);
+        BOOST_CHECK(!verify(pubkey, short_sig));
+        auto short_pk = pubkey;
+        short_pk.resize(pubkey.size() + delta, 0x00);
+        BOOST_CHECK(!verify(short_pk, sig));
+    }
+
+    // The other scheme's sizes are just as wrong.
+    BOOST_CHECK(!verify(std::vector<unsigned char>(pqc::ML_DSA_44_PUBKEY_SIZE, 0x00), sig));
+    BOOST_CHECK(!pqc::Verify(pqc::Scheme::ML_DSA_44, pubkey.data(), pubkey.size(), msg.data(), sig.data(), sig.size()));
+
+    // Scheme bytes outside the two the design defines.
+    for (const uint8_t b : {0x00, 0x03, 0x7f, 0xff}) {
+        BOOST_CHECK(!pqc::IsKnownScheme(b));
+    }
+    BOOST_CHECK(pqc::IsKnownScheme(static_cast<uint8_t>(pqc::Scheme::ML_DSA_44)));
+    BOOST_CHECK(pqc::IsKnownScheme(static_cast<uint8_t>(pqc::Scheme::SLH_DSA_SHA2_128S)));
+
+    // Misuse of the key generation and signing entry points returns false
+    // rather than tripping the guard inside randombytes().
+    {
+        std::vector<unsigned char> pk(pqc::ML_DSA_44_PUBKEY_SIZE);
+        std::vector<unsigned char> sk(pqc::ML_DSA_44_SECKEY_SIZE);
+        BOOST_CHECK(!pqc::SeedKeypair(pqc::Scheme::ML_DSA_44, pk.data(), sk.data(), seed.data(), 0));
+        BOOST_CHECK(!pqc::SeedKeypair(pqc::Scheme::SLH_DSA_SHA2_128S, pubkey.data(), seckey.data(), seed.data(), seed.size() - 1));
+
+        pqc::SetDeterministicEntropy(nullptr, 0);
+        BOOST_CHECK(!pqc::HasDeterministicEntropy());
+        std::vector<unsigned char> unused(pqc::SLH_DSA_SHA2_128S_SIG_SIZE);
+        size_t unused_len{0};
+        BOOST_CHECK(!pqc::Sign(pqc::Scheme::SLH_DSA_SHA2_128S, unused.data(), &unused_len, msg.data(), seckey.data()));
+
+        // Verification is unaffected: it draws no randomness.
+        BOOST_CHECK(verify(pubkey, sig));
+
+        // The entropy state is global, so put it back rather than leave the
+        // next test case to discover it is gone.
+        pqc::SetDeterministicEntropy(seed.data(), seed.size());
+    }
+}
+
+/** OP_CHECKPQSIG (draft): ML-DSA-44, and the scheme byte telling the two
+ *  schemes apart. */
+BOOST_AUTO_TEST_CASE(script_pqsig_ml_dsa)
+{
+    const std::vector<unsigned char> seed(32, 0x2b);
+
+    std::vector<unsigned char> ml_pubkey(pqc::ML_DSA_44_PUBKEY_SIZE);
+    std::vector<unsigned char> ml_seckey(pqc::ML_DSA_44_SECKEY_SIZE);
+    BOOST_REQUIRE(pqc::SeedKeypair(pqc::Scheme::ML_DSA_44, ml_pubkey.data(), ml_seckey.data(), seed.data(), seed.size()));
+
+    std::vector<unsigned char> slh_pubkey(pqc::SLH_DSA_SHA2_128S_PUBKEY_SIZE);
+    std::vector<unsigned char> slh_seckey(pqc::SLH_DSA_SHA2_128S_SECKEY_SIZE);
+    const std::vector<unsigned char> slh_seed(pqc::SLH_DSA_SHA2_128S_SEED_SIZE, 0x2b);
+    BOOST_REQUIRE(pqc::SeedKeypair(pqc::Scheme::SLH_DSA_SHA2_128S, slh_pubkey.data(), slh_seckey.data(), slh_seed.data(), slh_seed.size()));
+
+    const auto commit_to = [](pqc::Scheme scheme, const std::vector<unsigned char>& pubkey) {
+        HashWriter hasher{TaggedHash("PQPubKeyHash")};
+        hasher.write(MakeByteSpan(pubkey));
+        const uint256 hash{hasher.GetSHA256()};
+        std::vector<unsigned char> commitment{static_cast<unsigned char>(scheme)};
+        commitment.insert(commitment.end(), hash.begin(), hash.end());
+        return commitment;
+    };
+    const std::vector<unsigned char> ml_commitment{commit_to(pqc::Scheme::ML_DSA_44, ml_pubkey)};
+
+    const CScript leaf_ml = CScript() << ml_commitment << OP_CHECKPQSIG;
+    const std::vector<unsigned char> leaf_ml_bytes(leaf_ml.begin(), leaf_ml.end());
+    const CScript leaf_b = CScript() << OP_RETURN;
+    const uint256 hash_ml = ComputeTapleafHash(TAPROOT_LEAF_TAPSCRIPT, leaf_ml);
+    const uint256 hash_b = ComputeTapleafHash(TAPROOT_LEAF_TAPSCRIPT, leaf_b);
+
+    const CScript spk = CScript() << OP_2 << ToByteVector(ComputeTapbranchHash(hash_ml, hash_b));
+    const CAmount amount{10000};
+    const CTransaction credit_tx{BuildCreditingTransaction(spk, amount)};
+    CMutableTransaction spend_tx = BuildSpendingTransaction(CScript(), CScriptWitness(), credit_tx);
+    spend_tx.vin[0].scriptWitness.stack.push_back({});
+
+    PrecomputedTransactionData txdata;
+    txdata.Init(spend_tx, {credit_tx.vout[0]});
+    const MutableTransactionSignatureChecker checker{&spend_tx, 0, amount, txdata, MissingDataBehavior::FAIL};
+
+    std::vector<unsigned char> control{static_cast<unsigned char>(TAPROOT_LEAF_TAPSCRIPT | 1)};
+    control.insert(control.end(), hash_b.begin(), hash_b.end());
+
+    const script_verify_flags pq_flags{SCRIPT_VERIFY_P2SH | SCRIPT_VERIFY_WITNESS | SCRIPT_VERIFY_TAPROOT | SCRIPT_VERIFY_P2MR | SCRIPT_VERIFY_PQSIG};
+    ScriptError err;
+
+    // Sign the tapscript sighash of the ML-DSA leaf under either scheme, so
+    // that the cross-scheme cases below sign the same message.
+    const auto sign_leaf = [&](pqc::Scheme scheme, const std::vector<unsigned char>& seckey) {
+        ScriptExecutionData execdata;
+        execdata.m_annex_init = true;
+        execdata.m_annex_present = false;
+        execdata.m_tapleaf_hash_init = true;
+        execdata.m_tapleaf_hash = hash_ml;
+        execdata.m_codeseparator_pos_init = true;
+        execdata.m_codeseparator_pos = 0xFFFFFFFF;
+        uint256 sighash;
+        BOOST_REQUIRE(SignatureHashSchnorr(sighash, execdata, spend_tx, 0, SIGHASH_DEFAULT, SigVersion::TAPSCRIPT, txdata, MissingDataBehavior::FAIL));
+        std::vector<unsigned char> sig(pqc::SigSize(scheme));
+        size_t sig_len{0};
+        BOOST_REQUIRE(pqc::Sign(scheme, sig.data(), &sig_len, sighash.begin(), seckey.data()));
+        BOOST_REQUIRE_EQUAL(sig_len, pqc::SigSize(scheme));
+        return sig;
+    };
+    const std::vector<unsigned char> ml_sig{sign_leaf(pqc::Scheme::ML_DSA_44, ml_seckey)};
+    BOOST_CHECK_EQUAL(ml_sig.size(), pqc::ML_DSA_44_SIG_SIZE);
+
+    // Both halves are reproducible from the seed, which is what test vectors
+    // would need. Neither is deterministic on its own: this Dilithium copy
+    // enables DILITHIUM_RANDOMIZED_SIGNING and SPHINCS+ randomizes its
+    // message digest, so both draw from the entropy hook. Reinstalling the
+    // seed puts the stream back where it started.
+    {
+        std::vector<unsigned char> pk_again(pqc::ML_DSA_44_PUBKEY_SIZE);
+        std::vector<unsigned char> sk_again(pqc::ML_DSA_44_SECKEY_SIZE);
+        BOOST_REQUIRE(pqc::SeedKeypair(pqc::Scheme::ML_DSA_44, pk_again.data(), sk_again.data(), seed.data(), seed.size()));
+        BOOST_CHECK(pk_again == ml_pubkey);
+        BOOST_CHECK(sk_again == ml_seckey);
+
+        pqc::SetDeterministicEntropy(seed.data(), seed.size());
+        const auto sig_a{sign_leaf(pqc::Scheme::ML_DSA_44, ml_seckey)};
+        pqc::SetDeterministicEntropy(seed.data(), seed.size());
+        const auto sig_b{sign_leaf(pqc::Scheme::ML_DSA_44, ml_seckey)};
+        BOOST_CHECK(sig_a == sig_b);
+    }
+
+    // Valid ML-DSA spend.
+    {
+        CScriptWitness w;
+        w.stack = {ml_sig, ml_pubkey, leaf_ml_bytes, control};
+        BOOST_CHECK(VerifyScript(CScript(), spk, &w, pq_flags, checker, &err));
+        BOOST_CHECK_MESSAGE(err == SCRIPT_ERR_OK, ScriptErrorString(err));
+    }
+
+    // Bit-flipped ML-DSA signature.
+    {
+        auto sig = ml_sig;
+        sig[100] ^= 1;
+        CScriptWitness w;
+        w.stack = {sig, ml_pubkey, leaf_ml_bytes, control};
+        BOOST_CHECK(!VerifyScript(CScript(), spk, &w, pq_flags, checker, &err));
+        BOOST_CHECK_EQUAL(FormatScriptError(err), FormatScriptError(SCRIPT_ERR_PQSIG));
+    }
+
+    // An SLH-DSA key and signature over the same sighash, offered against a
+    // leaf that commits to ML-DSA. The scheme byte fixes the expected sizes,
+    // so this is rejected on size before anything else.
+    {
+        CScriptWitness w;
+        w.stack = {sign_leaf(pqc::Scheme::SLH_DSA_SHA2_128S, slh_seckey), slh_pubkey, leaf_ml_bytes, control};
+        BOOST_CHECK(!VerifyScript(CScript(), spk, &w, pq_flags, checker, &err));
+        BOOST_CHECK_EQUAL(FormatScriptError(err), FormatScriptError(SCRIPT_ERR_PQSIG_SIZE));
+    }
+
+    // A leaf that commits to the same key under the other scheme byte. The
+    // sizes line up with SLH-DSA, so this one gets past the size checks and
+    // fails on the commitment instead.
+    {
+        const std::vector<unsigned char> wrong_scheme_commitment{commit_to(pqc::Scheme::SLH_DSA_SHA2_128S, ml_pubkey)};
+        const CScript leaf_wrong = CScript() << wrong_scheme_commitment << OP_CHECKPQSIG;
+        const uint256 hash_wrong = ComputeTapleafHash(TAPROOT_LEAF_TAPSCRIPT, leaf_wrong);
+        const CScript spk_wrong = CScript() << OP_2 << ToByteVector(ComputeTapbranchHash(hash_wrong, hash_b));
+        CScriptWitness w;
+        w.stack = {std::vector<unsigned char>(pqc::SLH_DSA_SHA2_128S_SIG_SIZE, 0x00), slh_pubkey,
+                   {leaf_wrong.begin(), leaf_wrong.end()}, control};
+        BOOST_CHECK(!VerifyScript(CScript(), spk_wrong, &w, pq_flags, checker, &err));
+        BOOST_CHECK_EQUAL(FormatScriptError(err), FormatScriptError(SCRIPT_ERR_PQSIG_PUBKEYHASH));
+    }
+
+    // Both schemes in one leaf, each with its own key.
+    {
+        const std::vector<unsigned char> slh_commitment{commit_to(pqc::Scheme::SLH_DSA_SHA2_128S, slh_pubkey)};
+        const CScript leaf_both = CScript() << ml_commitment << OP_CHECKPQSIG << OP_VERIFY << slh_commitment << OP_CHECKPQSIG;
+        const uint256 hash_both = ComputeTapleafHash(TAPROOT_LEAF_TAPSCRIPT, leaf_both);
+        const CScript spk_both = CScript() << OP_2 << ToByteVector(ComputeTapbranchHash(hash_both, hash_b));
+        const CTransaction credit_2{BuildCreditingTransaction(spk_both, amount)};
+        CMutableTransaction spend_2 = BuildSpendingTransaction(CScript(), CScriptWitness(), credit_2);
+        spend_2.vin[0].scriptWitness.stack.push_back({});
+        PrecomputedTransactionData txdata_2;
+        txdata_2.Init(spend_2, {credit_2.vout[0]});
+        const MutableTransactionSignatureChecker checker_2{&spend_2, 0, amount, txdata_2, MissingDataBehavior::FAIL};
+
+        ScriptExecutionData execdata;
+        execdata.m_annex_init = true;
+        execdata.m_annex_present = false;
+        execdata.m_tapleaf_hash_init = true;
+        execdata.m_tapleaf_hash = hash_both;
+        execdata.m_codeseparator_pos_init = true;
+        execdata.m_codeseparator_pos = 0xFFFFFFFF;
+        uint256 sighash;
+        BOOST_REQUIRE(SignatureHashSchnorr(sighash, execdata, spend_2, 0, SIGHASH_DEFAULT, SigVersion::TAPSCRIPT, txdata_2, MissingDataBehavior::FAIL));
+        std::vector<unsigned char> sig_ml(pqc::ML_DSA_44_SIG_SIZE);
+        std::vector<unsigned char> sig_slh(pqc::SLH_DSA_SHA2_128S_SIG_SIZE);
+        size_t len_ml{0}, len_slh{0};
+        BOOST_REQUIRE(pqc::Sign(pqc::Scheme::ML_DSA_44, sig_ml.data(), &len_ml, sighash.begin(), ml_seckey.data()));
+        BOOST_REQUIRE(pqc::Sign(pqc::Scheme::SLH_DSA_SHA2_128S, sig_slh.data(), &len_slh, sighash.begin(), slh_seckey.data()));
+
+        CScriptWitness w;
+        w.stack = {sig_slh, slh_pubkey, sig_ml, ml_pubkey, {leaf_both.begin(), leaf_both.end()}, control};
+        BOOST_CHECK(VerifyScript(CScript(), spk_both, &w, pq_flags, checker_2, &err));
         BOOST_CHECK_MESSAGE(err == SCRIPT_ERR_OK, ScriptErrorString(err));
     }
 }
