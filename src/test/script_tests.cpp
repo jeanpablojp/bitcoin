@@ -1711,7 +1711,7 @@ BOOST_AUTO_TEST_CASE(script_pqsig_slh_dsa)
     std::vector<unsigned char> pq_pubkey(pqc::SLH_DSA_SHA2_128S_PUBKEY_SIZE);
     std::vector<unsigned char> pq_seckey(pqc::SLH_DSA_SHA2_128S_SECKEY_SIZE);
     const std::vector<unsigned char> seed(pqc::SLH_DSA_SHA2_128S_SEED_SIZE, 0x17);
-    BOOST_REQUIRE(pqc::SeedKeypair(pqc::Scheme::SLH_DSA_SHA2_128S, pq_pubkey.data(), pq_seckey.data(), seed.data()));
+    BOOST_REQUIRE(pqc::SeedKeypair(pqc::Scheme::SLH_DSA_SHA2_128S, pq_pubkey.data(), pq_seckey.data(), seed.data(), seed.size()));
 
     // Leaf script: <scheme_byte || H(pubkey)> OP_CHECKPQSIG.
     HashWriter pubkey_hasher{TaggedHash("PQPubKeyHash")};
