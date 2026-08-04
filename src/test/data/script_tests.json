@@ -2800,6 +2800,30 @@
     "OK",
     "Without the flag, an unknown public key type passes the signature check"
 ],
+[
+    [
+        "#SCRIPT# 1",
+        "#CONTROLBLOCK#c2",
+        0.00000001
+    ],
+    "",
+    "0x51 0x20 #TAPROOTOUTPUT#",
+    "P2SH,WITNESS,TAPROOT,DISCOURAGE_UPGRADABLE_TAPROOT_VERSION",
+    "DISCOURAGE_UPGRADABLE_TAPROOT_VERSION",
+    "Leaf version 0xc2 is reserved for future upgrades"
+],
+[
+    [
+        "#SCRIPT# 1",
+        "#CONTROLBLOCK#c2",
+        0.00000001
+    ],
+    "",
+    "0x51 0x20 #TAPROOTOUTPUT#",
+    "P2SH,WITNESS,TAPROOT",
+    "OK",
+    "Without the flag, an unknown leaf version is unencumbered"
+],
 
 ["NULLFAIL should cover all signatures and signatures only"],
 ["0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0", "0x01 0x14 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 0x01 0x14 CHECKMULTISIG NOT", "DERSIG", "OK", "BIP66 and NULLFAIL-compliant"],

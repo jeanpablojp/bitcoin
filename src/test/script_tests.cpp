@@ -93,6 +93,7 @@ static ScriptErrorDesc script_errors[]={
     {SCRIPT_ERR_TAPSCRIPT_EMPTY_PUBKEY, "TAPSCRIPT_EMPTY_PUBKEY"},
     {SCRIPT_ERR_DISCOURAGE_UPGRADABLE_PUBKEYTYPE, "DISCOURAGE_UPGRADABLE_PUBKEYTYPE"},
     {SCRIPT_ERR_DISCOURAGE_OP_SUCCESS, "DISCOURAGE_OP_SUCCESS"},
+    {SCRIPT_ERR_DISCOURAGE_UPGRADABLE_TAPROOT_VERSION, "DISCOURAGE_UPGRADABLE_TAPROOT_VERSION"},
     {SCRIPT_ERR_OP_CODESEPARATOR, "OP_CODESEPARATOR"},
     {SCRIPT_ERR_SIG_FINDANDDELETE, "SIG_FINDANDDELETE"},
     {SCRIPT_ERR_SCRIPTNUM, "SCRIPTNUM"}
@@ -932,15 +933,27 @@ BOOST_AUTO_TEST_CASE(script_json_test)
                 // We use #SCRIPT# to flag a non-hex script that we can read using ParseScript
                 // Taproot script must be third from the last element in witness stack
                 static const std::string SCRIPT_FLAG{"#SCRIPT#"};
+                static const std::string CONTROLBLOCK_FLAG{"#CONTROLBLOCK#"};
                 if (element.starts_with(SCRIPT_FLAG)) {
                     CScript script = ParseScript(element.substr(SCRIPT_FLAG.size()));
                     witness.stack.push_back(ToByteVector(script));
-                } else if (element == "#CONTROLBLOCK#") {
+                } else if (element.starts_with(CONTROLBLOCK_FLAG)) {
                     // Taproot script control block - second from the last element in witness stack
-                    // If #CONTROLBLOCK# we auto-generate the control block
-                    taprootBuilder.Add(/*depth=*/0, witness.stack.back(), TAPROOT_LEAF_TAPSCRIPT, /*track=*/true);
+                    // If #CONTROLBLOCK# we auto-generate the control block. An optional hex
+                    // suffix selects a non-default leaf version, e.g. #CONTROLBLOCK#c2
+                    int leaf_version{TAPROOT_LEAF_TAPSCRIPT};
+                    const std::string leaf_version_hex{element.substr(CONTROLBLOCK_FLAG.size())};
+                    if (!leaf_version_hex.empty()) {
+                        const auto parsed{TryParseHex<unsigned char>(leaf_version_hex)};
+                        if (!parsed.has_value() || parsed->size() != 1) {
+                            BOOST_ERROR("Bad leaf version in test: " << strTest);
+                        } else {
+                            leaf_version = parsed->front();
+                        }
+                    }
+                    taprootBuilder.Add(/*depth=*/0, witness.stack.back(), leaf_version, /*track=*/true);
                     taprootBuilder.Finalize(XOnlyPubKey(keys.key0.GetPubKey()));
-                    auto controlblocks = taprootBuilder.GetSpendData().scripts[{witness.stack.back(), TAPROOT_LEAF_TAPSCRIPT}];
+                    auto controlblocks = taprootBuilder.GetSpendData().scripts[{witness.stack.back(), leaf_version}];
                     witness.stack.push_back(*(controlblocks.begin()));
                 } else {
                     const auto witness_value{TryParseHex<unsigned char>(element)};
