@@ -2747,6 +2747,60 @@
     "TAPSCRIPT: OP_CHECKSIG with empty pubkey must fail"
 ],
 
+["Discouraged upgradable Tapscript features"],
+["Each is valid under consensus and succeeds without its policy flag, but is"],
+["rejected with its own error code once the flag is set."],
+[
+    [
+        "#SCRIPT# 0x50",
+        "#CONTROLBLOCK#",
+        0.00000001
+    ],
+    "",
+    "0x51 0x20 #TAPROOTOUTPUT#",
+    "P2SH,WITNESS,TAPROOT,DISCOURAGE_OP_SUCCESS",
+    "DISCOURAGE_OP_SUCCESS",
+    "OP_SUCCESS80 in a tapscript"
+],
+[
+    [
+        "#SCRIPT# 0x50",
+        "#CONTROLBLOCK#",
+        0.00000001
+    ],
+    "",
+    "0x51 0x20 #TAPROOTOUTPUT#",
+    "P2SH,WITNESS,TAPROOT",
+    "OK",
+    "Without the flag, an OP_SUCCESSx makes the script succeed immediately"
+],
+[
+    [
+        "00",
+        "#SCRIPT# 0x21 0x038282263212c609d9ea2a6e3e172de238d8c39cabd5ac1ca10646e23fd5f51508 CHECKSIG",
+        "#CONTROLBLOCK#",
+        0.00000001
+    ],
+    "",
+    "0x51 0x20 #TAPROOTOUTPUT#",
+    "P2SH,WITNESS,TAPROOT,DISCOURAGE_UPGRADABLE_PUBKEYTYPE",
+    "DISCOURAGE_UPGRADABLE_PUBKEYTYPE",
+    "A 33-byte public key is an unknown type in tapscript"
+],
+[
+    [
+        "00",
+        "#SCRIPT# 0x21 0x038282263212c609d9ea2a6e3e172de238d8c39cabd5ac1ca10646e23fd5f51508 CHECKSIG",
+        "#CONTROLBLOCK#",
+        0.00000001
+    ],
+    "",
+    "0x51 0x20 #TAPROOTOUTPUT#",
+    "P2SH,WITNESS,TAPROOT",
+    "OK",
+    "Without the flag, an unknown public key type passes the signature check"
+],
+
 ["NULLFAIL should cover all signatures and signatures only"],
 ["0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0", "0x01 0x14 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 0x01 0x14 CHECKMULTISIG NOT", "DERSIG", "OK", "BIP66 and NULLFAIL-compliant"],
 ["0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0", "0x01 0x14 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 0x01 0x14 CHECKMULTISIG NOT", "DERSIG,NULLFAIL", "OK", "BIP66 and NULLFAIL-compliant"],
