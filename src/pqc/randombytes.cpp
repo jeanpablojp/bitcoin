@@ -13,22 +13,30 @@
 // aborts if it is ever reached with no entropy installed, which only tests
 // and vector generation install. The entry points in pqc_verify.h check for
 // it first, so the abort is left for vendored code drawing randomness
-// nobody arranged for, not for ordinary misuse. The state is a plain
-// global: nothing that touches it runs on more than one thread.
+// nobody arranged for, not for ordinary misuse.
+//
+// The state is a single global, so a caller reachable from more than one
+// thread has to hold EntropyLock across the whole install-generate-sign
+// sequence. Locking each access would not help: the sequence is what needs
+// to be atomic, since another thread reinstalling or wiping between the
+// install and the draw would either change the result or trip the guard.
 
 #include <pqc/pqc_verify.h>
 
 #include <crypto/sha256.h>
+#include <support/cleanse.h>
 
 #include <algorithm>
 #include <cassert>
 #include <cstdint>
 #include <cstring>
+#include <mutex>
 #include <vector>
 
 namespace {
 std::vector<unsigned char> g_seed;
 uint64_t g_counter{0};
+std::mutex g_entropy_mutex;
 } // namespace
 
 namespace pqc {
@@ -42,6 +50,21 @@ void SetDeterministicEntropy(const unsigned char* seed, size_t seed_len)
 bool HasDeterministicEntropy()
 {
     return !g_seed.empty();
+}
+
+void ClearDeterministicEntropy()
+{
+    memory_cleanse(g_seed.data(), g_seed.size());
+    g_seed.clear();
+    g_counter = 0;
+}
+
+EntropyLock::EntropyLock() { g_entropy_mutex.lock(); }
+
+EntropyLock::~EntropyLock()
+{
+    ClearDeterministicEntropy();
+    g_entropy_mutex.unlock();
 }
 
 } // namespace pqc

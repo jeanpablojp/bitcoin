@@ -53,6 +53,23 @@ void SetDeterministicEntropy(const unsigned char* seed, size_t seed_len);
 //! that misuse returns false instead of tripping the guard in randombytes().
 bool HasDeterministicEntropy();
 
+//! Wipe the installed entropy. Callers that hand in a secret seed should do
+//! this when they are done with it, since the state outlives the call.
+void ClearDeterministicEntropy();
+
+/** Serializes the install-generate-sign-wipe sequence and wipes on the way
+ *  out. The entropy state is a single global, so anything reachable from
+ *  more than one thread, an RPC handler for instance, has to hold this for
+ *  the whole sequence rather than for each access. */
+class EntropyLock
+{
+public:
+    EntropyLock();
+    ~EntropyLock();
+    EntropyLock(const EntropyLock&) = delete;
+    EntropyLock& operator=(const EntropyLock&) = delete;
+};
+
 //! Deterministic keypair from a seed, which it also installs as the entropy
 //! for later signing. Buffers must have the scheme's exact pubkey/seckey
 //! sizes. SLH-DSA requires exactly SLH_DSA_SHA2_128S_SEED_SIZE bytes; ML-DSA
