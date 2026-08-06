@@ -41,6 +41,7 @@ add_executable(bench_bitcoin
   peer_eviction.cpp
   poly1305.cpp
   pool.cpp
+  pqc_verify.cpp
   prevector.cpp
   random.cpp
   readwriteblock.cpp
