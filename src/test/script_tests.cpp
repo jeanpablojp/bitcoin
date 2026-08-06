@@ -1969,18 +1969,27 @@ BOOST_AUTO_TEST_CASE(script_pqsig_slh_dsa)
 
     // The BIP 342 weight budget applies. A leaf that repeats the check over
     // the same signature funds no extra budget, so enough repetitions run
-    // the input out of it. At the current provisional cost, the witness
+    // the input out of it. At the calibrated cost of 1000, the witness
     // holding one 7856-byte signature funds eight checks but not nine.
+    //
+    // That pair alone would pass for any cost between 924 and 1034, since
+    // the budget only resolves a per-check cost to about one part in the
+    // number of checks a witness affords. Repeating it with the witness
+    // padded by the largest element the leaf admits affords sixteen checks
+    // instead of eight, and the two boundaries together narrow the range
+    // that satisfies both to 989 through 1034.
     {
-        const auto repeat_leaf = [&](int n) {
+        const auto repeat_leaf = [&](int n, size_t padding) {
             CScript s;
             for (int j = 0; j < n; ++j) {
                 s = s << OP_2DUP << commitment << OP_CHECKPQSIG << OP_VERIFY;
             }
-            return s << OP_2DROP << OP_1;
+            s = s << OP_2DROP;
+            if (padding > 0) s = s << OP_DROP; // the padding element
+            return s << OP_1;
         };
-        const auto spend_repeats = [&](int n) {
-            const CScript leaf = repeat_leaf(n);
+        const auto spend_repeats = [&](int n, size_t padding = 0) {
+            const CScript leaf = repeat_leaf(n, padding);
             const uint256 hash_leaf = ComputeTapleafHash(TAPROOT_LEAF_TAPSCRIPT, leaf);
             const CScript spk_rep = CScript() << OP_2 << ToByteVector(ComputeTapbranchHash(hash_leaf, hash_b));
             const CTransaction credit_r{BuildCreditingTransaction(spk_rep, amount)};
@@ -2004,13 +2013,29 @@ BOOST_AUTO_TEST_CASE(script_pqsig_slh_dsa)
             BOOST_REQUIRE(pqc::Sign(pqc::Scheme::SLH_DSA_SHA2_128S, sig.data(), &sig_len, sighash.begin(), pq_seckey.data()));
 
             CScriptWitness w;
+            // The padding sits below the signature, so the repeats keep
+            // working on the top two elements and one OP_DROP clears it.
             w.stack = {sig, pq_pubkey, {leaf.begin(), leaf.end()}, control};
+            if (padding > 0) w.stack.insert(w.stack.begin(), std::vector<unsigned char>(padding, 0x00));
             return VerifyScript(CScript(), spk_rep, &w, pq_flags, checker_r, &err);
         };
         BOOST_CHECK(spend_repeats(8));
         BOOST_CHECK_MESSAGE(err == SCRIPT_ERR_OK, ScriptErrorString(err));
         BOOST_CHECK(!spend_repeats(9));
         BOOST_CHECK_EQUAL(FormatScriptError(err), FormatScriptError(SCRIPT_ERR_TAPSCRIPT_VALIDATION_WEIGHT));
+
+        BOOST_CHECK(spend_repeats(16, PQ_MAX_ELEMENT_SIZE));
+        BOOST_CHECK_MESSAGE(err == SCRIPT_ERR_OK, ScriptErrorString(err));
+        BOOST_CHECK(!spend_repeats(17, PQ_MAX_ELEMENT_SIZE));
+        BOOST_CHECK_EQUAL(FormatScriptError(err), FormatScriptError(SCRIPT_ERR_TAPSCRIPT_VALIDATION_WEIGHT));
+
+        // BIP 342 fails a spend only once the budget goes negative, so
+        // spending it to exactly zero has to pass. With 681 bytes of
+        // padding the witness funds 9000 units against nine checks costing
+        // 9000, which is the one case that separates the rule from an
+        // off-by-one that rejects on zero.
+        BOOST_CHECK(spend_repeats(9, 681));
+        BOOST_CHECK_MESSAGE(err == SCRIPT_ERR_OK, ScriptErrorString(err));
     }
 
     // Fewer than three stack elements.
@@ -2360,6 +2385,51 @@ BOOST_AUTO_TEST_CASE(script_pqsig_ml_dsa)
         w.stack = {sig_slh, slh_pubkey, sig_ml, ml_pubkey, {leaf_both.begin(), leaf_both.end()}, control};
         BOOST_CHECK(VerifyScript(CScript(), spk_both, &w, pq_flags, checker_2, &err));
         BOOST_CHECK_MESSAGE(err == SCRIPT_ERR_OK, ScriptErrorString(err));
+    }
+
+    // The weight budget boundary at the ML-DSA cost of 200. The witness
+    // holding one 2420-byte signature and its 1312-byte pubkey funds
+    // twenty-three checks; each repetition past the first adds 37 bytes of
+    // leaf script (37 of budget) but costs 200, so the twenty-fourth runs
+    // out. Same shape as the SLH-DSA boundary test, which pins its cost at
+    // eight against nine.
+    {
+        const auto spend_repeats = [&](int n) {
+            CScript leaf;
+            for (int j = 0; j < n; ++j) {
+                leaf = leaf << OP_2DUP << ml_commitment << OP_CHECKPQSIG << OP_VERIFY;
+            }
+            leaf = leaf << OP_2DROP << OP_1;
+            const uint256 hash_leaf = ComputeTapleafHash(TAPROOT_LEAF_TAPSCRIPT, leaf);
+            const CScript spk_rep = CScript() << OP_2 << ToByteVector(ComputeTapbranchHash(hash_leaf, hash_b));
+            const CTransaction credit_r{BuildCreditingTransaction(spk_rep, amount)};
+            CMutableTransaction spend_r = BuildSpendingTransaction(CScript(), CScriptWitness(), credit_r);
+            spend_r.vin[0].scriptWitness.stack.push_back({});
+            PrecomputedTransactionData txdata_r;
+            txdata_r.Init(spend_r, {credit_r.vout[0]});
+            const MutableTransactionSignatureChecker checker_r{&spend_r, 0, amount, txdata_r, MissingDataBehavior::FAIL};
+
+            ScriptExecutionData execdata;
+            execdata.m_annex_init = true;
+            execdata.m_annex_present = false;
+            execdata.m_tapleaf_hash_init = true;
+            execdata.m_tapleaf_hash = hash_leaf;
+            execdata.m_codeseparator_pos_init = true;
+            execdata.m_codeseparator_pos = 0xFFFFFFFF;
+            uint256 sighash;
+            BOOST_REQUIRE(SignatureHashSchnorr(sighash, execdata, spend_r, 0, SIGHASH_DEFAULT, SigVersion::TAPSCRIPT, txdata_r, MissingDataBehavior::FAIL));
+            std::vector<unsigned char> sig(pqc::ML_DSA_44_SIG_SIZE);
+            size_t sig_len{0};
+            BOOST_REQUIRE(pqc::Sign(pqc::Scheme::ML_DSA_44, sig.data(), &sig_len, sighash.begin(), ml_seckey.data()));
+
+            CScriptWitness w;
+            w.stack = {sig, ml_pubkey, {leaf.begin(), leaf.end()}, control};
+            return VerifyScript(CScript(), spk_rep, &w, pq_flags, checker_r, &err);
+        };
+        BOOST_CHECK(spend_repeats(23));
+        BOOST_CHECK_MESSAGE(err == SCRIPT_ERR_OK, ScriptErrorString(err));
+        BOOST_CHECK(!spend_repeats(24));
+        BOOST_CHECK_EQUAL(FormatScriptError(err), FormatScriptError(SCRIPT_ERR_TAPSCRIPT_VALIDATION_WEIGHT));
     }
 }
 

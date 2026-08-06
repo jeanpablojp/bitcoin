@@ -397,6 +397,17 @@ static bool EvalChecksigTapscript(const valtype& sig, const valtype& pubkey, Scr
 //! Tagged hasher for the OP_CHECKPQSIG pubkey commitment (draft).
 static const HashWriter HASHER_PQPUBKEYHASH{TaggedHash("PQPubKeyHash")};
 
+//! Validation weight a passing OP_CHECKPQSIG costs, by scheme. No default
+//! case, so the compiler can warn about missing cases.
+static int64_t ValidationWeightPQSig(pqc::Scheme scheme)
+{
+    switch (scheme) {
+    case pqc::Scheme::ML_DSA_44: return VALIDATION_WEIGHT_ML_DSA_44;
+    case pqc::Scheme::SLH_DSA_SHA2_128S: return VALIDATION_WEIGHT_SLH_DSA_SHA2_128S;
+    }
+    assert(false);
+}
+
 /** Helper for OP_CHECKPQSIG (draft). Mirrors the EvalChecksigTapscript
  *  structure: empty signature sets success=false without consuming budget;
  *  every other rule violation fails the script outright. */
@@ -413,11 +424,11 @@ static bool EvalCheckPQSig(const valtype& sig, const valtype& pubkey, const valt
     success = !sig.empty();
     if (!success) return true;
 
-    // Same sigops/witnesssize ratio test as EvalChecksigTapscript. The cost
-    // is provisional and currently shared by all schemes; calibration into
-    // per-scheme constants is a later task.
+    // Same sigops/witnesssize ratio test as EvalChecksigTapscript, with a
+    // per-scheme cost calibrated from the measured cost of one check (see
+    // the constants in script.h).
     assert(execdata.m_validation_weight_left_init);
-    execdata.m_validation_weight_left -= VALIDATION_WEIGHT_PQSIG;
+    execdata.m_validation_weight_left -= ValidationWeightPQSig(scheme);
     if (execdata.m_validation_weight_left < 0) {
         return set_error(serror, SCRIPT_ERR_TAPSCRIPT_VALIDATION_WEIGHT);
     }

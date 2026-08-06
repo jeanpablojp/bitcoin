@@ -71,10 +71,18 @@ static constexpr int64_t VALIDATION_WEIGHT_OFFSET{50};
 // scripts keep MAX_SCRIPT_ELEMENT_SIZE.
 static constexpr unsigned int PQ_MAX_ELEMENT_SIZE{8192};
 
-// Validation weight per passing OP_CHECKPQSIG, currently the same for every
-// scheme (draft). PROVISIONAL: a real value has to come from measured
-// verification time relative to a Schnorr sigop, and may differ per scheme.
-static constexpr int64_t VALIDATION_WEIGHT_PQSIG{1000};
+// Validation weight per passing OP_CHECKPQSIG, per scheme (draft). Each
+// value is 50, the cost of a passing Schnorr check, times the ceiling of
+// what one check of the scheme costs against one Schnorr check. A check is
+// the work the opcode repeats: the public key parse and the verification
+// for Schnorr, the commitment hash and the verification here.
+// bench/pqc_verify.cpp measures it, with medians of 3.07 for ML-DSA-44 and
+// 19.24 for SLH-DSA-SHA2-128s. Both PQ trees are reference implementations
+// measured against an optimized libsecp256k1, so the ratios lean high,
+// which is the safe direction for a budget that exists to stop underpriced
+// validation CPU.
+static constexpr int64_t VALIDATION_WEIGHT_ML_DSA_44{200};
+static constexpr int64_t VALIDATION_WEIGHT_SLH_DSA_SHA2_128S{1000};
 
 template <typename T>
 std::vector<unsigned char> ToByteVector(const T& in)
