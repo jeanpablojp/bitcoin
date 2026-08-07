@@ -46,8 +46,9 @@ static constexpr size_t ML_DSA_44_SECKEY_SIZE{2560};
 
 //! Install the entropy the vendored Dilithium draws from while generating
 //! keys and signing. Nothing in consensus calls this; without it
-//! randombytes() aborts
-//! rather than inventing randomness. An empty seed installs nothing.
+//! randombytes() aborts rather than inventing randomness. An empty seed
+//! installs nothing. SLH-DSA reaches none of this, being deterministic in
+//! both operations.
 void SetDeterministicEntropy(const unsigned char* seed, size_t seed_len);
 
 //! Whether entropy is currently installed. SeedKeypair and Sign check this so
@@ -71,15 +72,16 @@ public:
     EntropyLock& operator=(const EntropyLock&) = delete;
 };
 
-//! Deterministic keypair from a seed, which it also installs as the entropy
-//! for later signing. Buffers must have the scheme's exact pubkey/seckey
-//! sizes. SLH-DSA requires exactly SLH_DSA_SHA2_128S_SEED_SIZE bytes; ML-DSA
-//! accepts any length, since the seed only feeds the hook.
+//! Deterministic keypair from a seed. Buffers must have the scheme's exact
+//! pubkey/seckey sizes. SLH-DSA requires exactly SLH_DSA_SHA2_128S_SEED_SIZE
+//! bytes, which it splits into its three key seeds. ML-DSA accepts any
+//! length, since the seed only feeds the hook, which this installs for it.
 bool SeedKeypair(Scheme scheme, unsigned char* pk, unsigned char* sk, const unsigned char* seed, size_t seed_len);
 
 //! Detached signature over a 32-byte message. `sig` must have SigSize(scheme)
-//! bytes of space; `sig_len` returns the written length. Entropy has to be
-//! installed first, which SeedKeypair does.
+//! bytes of space; `sig_len` returns the written length. ML-DSA randomizes
+//! the signature, so entropy has to be installed first, which SeedKeypair
+//! does; SLH-DSA signing is deterministic and needs none.
 bool Sign(Scheme scheme, unsigned char* sig, size_t* sig_len, const unsigned char* msg32, const unsigned char* sk);
 
 } // namespace pqc

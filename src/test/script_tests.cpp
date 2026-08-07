@@ -2210,9 +2210,19 @@ BOOST_AUTO_TEST_CASE(pqsig_verify_sizes)
 
         pqc::SetDeterministicEntropy(nullptr, 0);
         BOOST_CHECK(!pqc::HasDeterministicEntropy());
-        std::vector<unsigned char> unused(pqc::SLH_DSA_SHA2_128S_SIG_SIZE);
-        size_t unused_len{0};
-        BOOST_CHECK(!pqc::Sign(pqc::Scheme::SLH_DSA_SHA2_128S, unused.data(), &unused_len, msg.data(), seckey.data()));
+
+        // ML-DSA randomizes its signature and has nothing here to draw from.
+        std::vector<unsigned char> ml_sig(pqc::ML_DSA_44_SIG_SIZE);
+        size_t ml_sig_len{0};
+        BOOST_CHECK(!pqc::Sign(pqc::Scheme::ML_DSA_44, ml_sig.data(), &ml_sig_len, msg.data(), sk.data()));
+
+        // SLH-DSA signing is deterministic under FIPS 205, so it needs none
+        // and reproduces what it produced while entropy was installed.
+        std::vector<unsigned char> again(pqc::SLH_DSA_SHA2_128S_SIG_SIZE);
+        size_t again_len{0};
+        BOOST_CHECK(pqc::Sign(pqc::Scheme::SLH_DSA_SHA2_128S, again.data(), &again_len, msg.data(), seckey.data()));
+        BOOST_CHECK_EQUAL(again_len, sig_len);
+        BOOST_CHECK(again == sig);
 
         // Verification is unaffected: it draws no randomness.
         BOOST_CHECK(verify(pubkey, sig));

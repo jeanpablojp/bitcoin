@@ -167,9 +167,11 @@ static RPCMethod pqsignhash()
                 throw JSONRPCError(RPC_INTERNAL_ERROR, "key generation failed");
             }
 
-            // Key generation consumed part of the stream the seed installed,
-            // so rewind it: the signature should be a function of the seed
-            // and the message, nothing else.
+            // ML-DSA key generation consumed part of the stream the seed
+            // installed, so rewind it: the signature should be a function of
+            // the seed and the message, nothing else. SLH-DSA reaches none
+            // of this, which is why installing here is unconditional but
+            // only ML-DSA notices.
             pqc::SetDeterministicEntropy(seed.data(), seed.size());
             memory_cleanse(seed.data(), seed.size());
 

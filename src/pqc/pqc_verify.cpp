@@ -36,23 +36,24 @@ size_t SigSize(Scheme scheme)
 
 bool SeedKeypair(Scheme scheme, unsigned char* pk, unsigned char* sk, const unsigned char* seed, size_t seed_len)
 {
-    // Reject before touching the entropy state, so a failed call leaves
-    // nothing behind. An empty seed would install nothing and leave the
-    // vendored code to trip the guard in randombytes() instead.
+    // Both checks run before the ML-DSA path installs anything, so a
+    // rejected call leaves no entropy state behind. An empty seed would
+    // install nothing and leave Dilithium to trip the guard in
+    // randombytes() instead.
     if (seed_len == 0) return false;
     if (scheme == Scheme::SLH_DSA_SHA2_128S && seed_len != SLH_DSA_SHA2_128S_SEED_SIZE) return false;
 
-    // Both schemes draw from randombytes() while signing, and Dilithium also
-    // draws during key generation. Installing the seed here covers every
-    // path, which is what makes key-to-signature reproducible.
-    SetDeterministicEntropy(seed, seed_len);
     switch (scheme) {
     case Scheme::SLH_DSA_SHA2_128S:
-        // SPHINCS+ derives the key pair from the seed directly.
+        // SLH-DSA takes the seed as its three key seeds and draws nothing
+        // else, in key generation or in signing, so the hook stays out of it.
         return backend::SlhDsaSeedKeypair(pk, sk, seed);
     case Scheme::ML_DSA_44:
-        // Dilithium has no seeded key generation entry point upstream, so
-        // the seed only reaches it through the hook installed above.
+        // Dilithium has no seeded key generation entry point upstream, and
+        // this copy also draws while signing, so the seed reaches it only
+        // through the hook. Installing it here is what makes key-to-signature
+        // reproducible.
+        SetDeterministicEntropy(seed, seed_len);
         return backend::MlDsaKeypair(pk, sk);
     }
     return false;
@@ -60,13 +61,14 @@ bool SeedKeypair(Scheme scheme, unsigned char* pk, unsigned char* sk, const unsi
 
 bool Sign(Scheme scheme, unsigned char* sig, size_t* sig_len, const unsigned char* msg32, const unsigned char* sk)
 {
-    // Both schemes randomize part of the signature, so signing without
-    // entropy is a caller mistake rather than something to abort over.
-    if (!HasDeterministicEntropy()) return false;
     switch (scheme) {
     case Scheme::SLH_DSA_SHA2_128S:
+        // Deterministic under FIPS 205, so there is no entropy to require.
         return backend::SlhDsaSign(sig, sig_len, msg32, sk);
     case Scheme::ML_DSA_44:
+        // This copy randomizes the signature, so signing with nothing
+        // installed is a caller mistake rather than something to abort over.
+        if (!HasDeterministicEntropy()) return false;
         return backend::MlDsaSign(sig, sig_len, msg32, sk);
     }
     return false;

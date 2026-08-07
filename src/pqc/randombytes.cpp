@@ -54,6 +54,9 @@ bool HasDeterministicEntropy()
 
 void ClearDeterministicEntropy()
 {
+    // Nothing installed is the ordinary case now that only Dilithium draws
+    // from here, and an empty vector has no buffer to hand to memset.
+    if (g_seed.empty()) return;
     memory_cleanse(g_seed.data(), g_seed.size());
     g_seed.clear();
     g_counter = 0;
