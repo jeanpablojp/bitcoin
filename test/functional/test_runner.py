@@ -413,6 +413,7 @@ NON_SCRIPTS = [
     "create_cache.py",
     "test_runner.py",
     "tool_p2mr_spend_vectors.py",
+    "tool_pqsig_spend_vectors.py",
 ]
 
 def main():
