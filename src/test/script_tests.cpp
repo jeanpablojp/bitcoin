@@ -1969,15 +1969,15 @@ BOOST_AUTO_TEST_CASE(script_pqsig_slh_dsa)
 
     // The BIP 342 weight budget applies. A leaf that repeats the check over
     // the same signature funds no extra budget, so enough repetitions run
-    // the input out of it. At the calibrated cost of 1000, the witness
-    // holding one 7856-byte signature funds eight checks but not nine.
+    // the input out of it. At the calibrated cost of 750, the witness
+    // holding one 7856-byte signature funds eleven checks but not twelve.
     //
-    // That pair alone would pass for any cost between 924 and 1034, since
+    // That pair alone would pass for any cost between 703 and 762, since
     // the budget only resolves a per-check cost to about one part in the
     // number of checks a witness affords. Repeating it with the witness
-    // padded by the largest element the leaf admits affords sixteen checks
-    // instead of eight, and the two boundaries together narrow the range
-    // that satisfies both to 989 through 1034.
+    // padded by the largest element the leaf admits affords twenty-two
+    // checks instead of eleven, and the two boundaries together narrow the
+    // range that satisfies both to 741 through 762.
     {
         const auto repeat_leaf = [&](int n, size_t padding) {
             CScript s;
@@ -2019,22 +2019,22 @@ BOOST_AUTO_TEST_CASE(script_pqsig_slh_dsa)
             if (padding > 0) w.stack.insert(w.stack.begin(), std::vector<unsigned char>(padding, 0x00));
             return VerifyScript(CScript(), spk_rep, &w, pq_flags, checker_r, &err);
         };
-        BOOST_CHECK(spend_repeats(8));
+        BOOST_CHECK(spend_repeats(11));
         BOOST_CHECK_MESSAGE(err == SCRIPT_ERR_OK, ScriptErrorString(err));
-        BOOST_CHECK(!spend_repeats(9));
+        BOOST_CHECK(!spend_repeats(12));
         BOOST_CHECK_EQUAL(FormatScriptError(err), FormatScriptError(SCRIPT_ERR_TAPSCRIPT_VALIDATION_WEIGHT));
 
-        BOOST_CHECK(spend_repeats(16, PQ_MAX_ELEMENT_SIZE));
+        BOOST_CHECK(spend_repeats(22, PQ_MAX_ELEMENT_SIZE));
         BOOST_CHECK_MESSAGE(err == SCRIPT_ERR_OK, ScriptErrorString(err));
-        BOOST_CHECK(!spend_repeats(17, PQ_MAX_ELEMENT_SIZE));
+        BOOST_CHECK(!spend_repeats(23, PQ_MAX_ELEMENT_SIZE));
         BOOST_CHECK_EQUAL(FormatScriptError(err), FormatScriptError(SCRIPT_ERR_TAPSCRIPT_VALIDATION_WEIGHT));
 
         // BIP 342 fails a spend only once the budget goes negative, so
-        // spending it to exactly zero has to pass. With 681 bytes of
-        // padding the witness funds 9000 units against nine checks costing
-        // 9000, which is the one case that separates the rule from an
-        // off-by-one that rejects on zero.
-        BOOST_CHECK(spend_repeats(9, 681));
+        // spending it to exactly zero has to pass. With 570 bytes of
+        // padding the witness funds 9000 units against twelve checks
+        // costing 9000, which is the one case that separates the rule from
+        // an off-by-one that rejects on zero.
+        BOOST_CHECK(spend_repeats(12, 570));
         BOOST_CHECK_MESSAGE(err == SCRIPT_ERR_OK, ScriptErrorString(err));
     }
 

@@ -361,10 +361,10 @@ class PQSigTest(BitcoinTestFramework):
     def test_validation_weight_budget(self):
         """The calibrated per-scheme costs, pinned from both sides through
         blocks. A repeated check funds no extra signature bytes, so the
-        budget carried by one signature's witness runs out: at cost 1000 an
-        SLH-DSA witness funds eight checks, at cost 200 an ML-DSA witness
+        budget carried by one signature's witness runs out: at cost 750 an
+        SLH-DSA witness funds eleven checks, at cost 200 an ML-DSA witness
         funds twenty-three."""
-        boundaries = (("slh-dsa-sha2-128s", 8), ("ml-dsa-44", 23))
+        boundaries = (("slh-dsa-sha2-128s", 11), ("ml-dsa-44", 23))
         for scheme, affordable in boundaries:
             pubkey = self.pq_pubkey(scheme)
             commitment = bytes([SCHEMES[scheme]["byte"]]) + TaggedHash("PQPubKeyHash", pubkey)

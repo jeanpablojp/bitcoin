@@ -76,13 +76,15 @@ static constexpr unsigned int PQ_MAX_ELEMENT_SIZE{8192};
 // what one check of the scheme costs against one Schnorr check. A check is
 // the work the opcode repeats: the public key parse and the verification
 // for Schnorr, the commitment hash and the verification here.
-// bench/pqc_verify.cpp measures it, with medians of 3.07 for ML-DSA-44 and
-// 19.24 for SLH-DSA-SHA2-128s. Both PQ trees are reference implementations
-// measured against an optimized libsecp256k1, so the ratios lean high,
-// which is the safe direction for a budget that exists to stop underpriced
-// validation CPU.
+// bench/pqc_verify.cpp measures it, over five runs, and the ratio taken is
+// the highest of them rather than the median: ML-DSA lands close enough to
+// 3 that the runs fall on either side of it, 2.98 to 3.03, against 14.34 to
+// 14.43 for SLH-DSA. Both PQ trees are reference implementations measured
+// against an optimized libsecp256k1, so the ratios lean high, which is the
+// safe direction for a budget that exists to stop underpriced validation
+// CPU.
 static constexpr int64_t VALIDATION_WEIGHT_ML_DSA_44{200};
-static constexpr int64_t VALIDATION_WEIGHT_SLH_DSA_SHA2_128S{1000};
+static constexpr int64_t VALIDATION_WEIGHT_SLH_DSA_SHA2_128S{750};
 
 template <typename T>
 std::vector<unsigned char> ToByteVector(const T& in)
