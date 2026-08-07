@@ -80,6 +80,7 @@ add_executable(test_bitcoin
   policyestimator_tests.cpp
   pool_tests.cpp
   pow_tests.cpp
+  pqc_acvp_tests.cpp
   pqsig_vector_tests.cpp
   prevector_tests.cpp
   private_broadcast_tests.cpp
@@ -156,6 +157,7 @@ target_json_data_sources(test_bitcoin
   data/script_tests.json
   data/sighash.json
   data/siphash.json
+  data/slh_dsa_acvp.json
   data/tx_invalid.json
   data/tx_valid.json
 )
