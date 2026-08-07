@@ -10,17 +10,10 @@ add_library(bitcoin_pqc STATIC EXCLUDE_FROM_ALL
   randombytes.cpp
   slh_dsa.cpp
   ml_dsa.cpp
-  sphincsplus/address.c
-  sphincsplus/fors.c
-  sphincsplus/hash_sha2.c
-  sphincsplus/merkle.c
-  sphincsplus/sha2.c
-  sphincsplus/sign.c
-  sphincsplus/thash_sha2_simple.c
-  sphincsplus/utils.c
-  sphincsplus/utilsx1.c
-  sphincsplus/wots.c
-  sphincsplus/wotsx1.c
+  slhdsa/slh_dsa.c
+  slhdsa/slh_sha2.c
+  slhdsa/sha2_256.c
+  slhdsa/sha2_512.c
   dilithium/fips202.c
   dilithium/ntt.c
   dilithium/packing.c
@@ -31,5 +24,5 @@ add_library(bitcoin_pqc STATIC EXCLUDE_FROM_ALL
   dilithium/sign.c
   dilithium/symmetric-shake.c
 )
-target_compile_definitions(bitcoin_pqc PRIVATE PARAMS=sphincs-sha2-128s DILITHIUM_MODE=2)
+target_compile_definitions(bitcoin_pqc PRIVATE DILITHIUM_MODE=2)
 target_link_libraries(bitcoin_pqc PRIVATE core_interface bitcoin_crypto)

@@ -2,11 +2,11 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
-// Both vendored reference implementations call randombytes(), and both ship
-// their own definition of it, so exactly one has to be kept: this one.
-// Dilithium draws in key generation, SPHINCS+ in signing, and this Dilithium
+// The vendored Dilithium calls randombytes() and ships its own definition of
+// it, which is dropped for this one. It draws in key generation, and this
 // copy also draws while signing because its config.h enables randomized
-// signing.
+// signing. The vendored SLH-DSA draws nothing: it takes its key seeds as
+// arguments and signs deterministically, so nothing below is on its path.
 //
 // Verification, the only path consensus takes, draws nothing. Rather than
 // pull an RNG into the consensus library for a path it never reaches, this

@@ -44,8 +44,9 @@ static constexpr size_t SLH_DSA_SHA2_128S_SECKEY_SIZE{64};
 static constexpr size_t SLH_DSA_SHA2_128S_SEED_SIZE{48};
 static constexpr size_t ML_DSA_44_SECKEY_SIZE{2560};
 
-//! Install the entropy the vendored code draws from while generating keys and
-//! signing. Nothing in consensus calls this; without it randombytes() aborts
+//! Install the entropy the vendored Dilithium draws from while generating
+//! keys and signing. Nothing in consensus calls this; without it
+//! randombytes() aborts
 //! rather than inventing randomness. An empty seed installs nothing.
 void SetDeterministicEntropy(const unsigned char* seed, size_t seed_len);
 
@@ -77,9 +78,8 @@ public:
 bool SeedKeypair(Scheme scheme, unsigned char* pk, unsigned char* sk, const unsigned char* seed, size_t seed_len);
 
 //! Detached signature over a 32-byte message. `sig` must have SigSize(scheme)
-//! bytes of space; `sig_len` returns the written length. SPHINCS+ randomizes
-//! the message digest, so entropy has to be installed first, which
-//! SeedKeypair does.
+//! bytes of space; `sig_len` returns the written length. Entropy has to be
+//! installed first, which SeedKeypair does.
 bool Sign(Scheme scheme, unsigned char* sig, size_t* sig_len, const unsigned char* msg32, const unsigned char* sk);
 
 } // namespace pqc

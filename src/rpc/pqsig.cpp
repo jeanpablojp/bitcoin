@@ -125,8 +125,9 @@ static RPCMethod pqsignhash()
         "Signs a 32-byte message with the key a seed produces. The message is\n"
         "whatever the caller computed, so the caller stays responsible for the\n"
         "sighash: this signs bytes and checks nothing about them.\n"
-        "Both schemes randomize part of the signature, so the seed also seeds\n"
-        "that; the same seed and message give the same signature back.\n"
+        "The same seed and message give the same signature back. SLH-DSA is\n"
+        "deterministic in itself; ML-DSA randomizes part of its signature, and\n"
+        "the seed seeds that too.\n"
         "The seed is supplied per call; nothing is stored.\n"
         "Experimental, for regtest use.\n",
         {

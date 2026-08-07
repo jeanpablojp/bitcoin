@@ -4,7 +4,8 @@
 
 // ML-DSA-44 backend, in its own translation unit for the reason given at the
 // top of slh_dsa.cpp. Dilithium's sign.h macro-renames crypto_sign_* onto
-// pqcrystals_dilithium2_ref_*, so nothing here can be mixed with SPHINCS+.
+// pqcrystals_dilithium2_ref_*, so nothing here can be mixed with the
+// SLH-DSA sources.
 
 #include <pqc/pqc_backends.h>
 

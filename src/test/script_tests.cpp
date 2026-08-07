@@ -2292,10 +2292,10 @@ BOOST_AUTO_TEST_CASE(script_pqsig_ml_dsa)
     BOOST_CHECK_EQUAL(ml_sig.size(), pqc::ML_DSA_44_SIG_SIZE);
 
     // Both halves are reproducible from the seed, which is what test vectors
-    // would need. Neither is deterministic on its own: this Dilithium copy
-    // enables DILITHIUM_RANDOMIZED_SIGNING and SPHINCS+ randomizes its
-    // message digest, so both draw from the entropy hook. Reinstalling the
-    // seed puts the stream back where it started.
+    // need. They get there differently: SLH-DSA is deterministic in itself,
+    // while this Dilithium copy enables DILITHIUM_RANDOMIZED_SIGNING and so
+    // draws from the entropy hook. Reinstalling the seed puts that stream
+    // back where it started.
     {
         std::vector<unsigned char> pk_again(pqc::ML_DSA_44_PUBKEY_SIZE);
         std::vector<unsigned char> sk_again(pqc::ML_DSA_44_SECKEY_SIZE);
