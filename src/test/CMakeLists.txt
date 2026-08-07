@@ -80,6 +80,7 @@ add_executable(test_bitcoin
   policyestimator_tests.cpp
   pool_tests.cpp
   pow_tests.cpp
+  pqsig_vector_tests.cpp
   prevector_tests.cpp
   private_broadcast_tests.cpp
   psbt_tests.cpp
@@ -151,6 +152,7 @@ target_json_data_sources(test_bitcoin
   data/p2mr_construction.json
   data/p2mr_pqc_construction.json
   data/p2mr_spending.json
+  data/pqsig_spending.json
   data/script_tests.json
   data/sighash.json
   data/siphash.json
