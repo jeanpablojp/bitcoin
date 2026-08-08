@@ -1,5 +1,5 @@
 {
- "comment": "SLH-DSA-SHA2-128s conformance cases from NIST's ACVP server. Signing and verification use the external signature interface, pure (not prehashed). Key generation cases carry the three key seeds separately; verification cases carry the reason NIST expects each rejection for; signing cases are byte-for-byte comparisons.",
+ "comment": "SLH-DSA-SHA2-128s conformance cases from NIST's ACVP server. Signing and verification use the external signature interface, pure (not prehashed). Key generation cases carry the three key seeds separately; verification cases carry NIST's own reason for the result it expects, which for the valid ones says the signature should verify; signing cases are byte-for-byte comparisons.",
  "source": "usnistgov/ACVP-Server, gen-val/json-files/SLH-DSA-{keyGen,sigVer,sigGen}-FIPS205/internalProjection.json",
  "keyGen": [
   {

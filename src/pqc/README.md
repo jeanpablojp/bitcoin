@@ -10,8 +10,9 @@ opcode selects SLH-DSA-SHA2-128s at each call through a parameter
 pointer, since upstream picks the set at runtime rather than by macro.
 
 test/pqc_acvp_tests.cpp runs NIST's own ACVP cases for that parameter
-set against this code, verification and signing both, which is what
-backs the FIPS 205 name.
+set against this code: key generation, verification and signing. That
+is what backs the FIPS 205 name, and pqc_acvp_ml_dsa_tests.cpp does
+the same for FIPS 204 on the verification side.
 
 dilithium/: ML-DSA-44 (FIPS 204), copied unmodified from
 libbitcoinpqc at commit 053e954534b13c1dbdc8ef4f9ae4d93bb301bab6

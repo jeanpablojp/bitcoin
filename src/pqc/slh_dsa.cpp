@@ -3,9 +3,9 @@
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 // SLH-DSA-SHA2-128s backend, over slhdsa-c. Kept in its own translation unit
-// because the vendored Dilithium macro-renames plain crypto_sign_* names onto
-// its own namespace, and including both headers in one file would let those
-// macros rewrite the calls meant for this one.
+// because Dilithium's headers define N, K, L, Q and D as macros, which leak
+// into anything that includes them. Nothing here needs those names today,
+// but a backend that used one would break in a way that reads as nonsense.
 //
 // Nothing here draws randomness. Key generation goes through the internal
 // entry point, which derives everything from the three seeds it is handed,

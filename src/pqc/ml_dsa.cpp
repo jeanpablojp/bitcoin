@@ -3,9 +3,8 @@
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 // ML-DSA-44 backend, in its own translation unit for the reason given at the
-// top of slh_dsa.cpp. Dilithium's sign.h macro-renames crypto_sign_* onto
-// pqcrystals_dilithium2_ref_*, so nothing here can be mixed with the
-// SLH-DSA sources.
+// top of slh_dsa.cpp: including sign.h drags in params.h, whose macros
+// would rewrite identifiers in any file that shares it.
 
 #include <pqc/pqc_backends.h>
 
