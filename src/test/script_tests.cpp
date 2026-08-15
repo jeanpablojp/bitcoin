@@ -1917,6 +1917,23 @@ BOOST_AUTO_TEST_CASE(script_pqsig_slh_dsa)
         BOOST_CHECK(!VerifyScript(CScript(), spk_short, &w, pq_flags, checker, &err));
         BOOST_CHECK_EQUAL(FormatScriptError(err), FormatScriptError(SCRIPT_ERR_PQSIG_SIZE));
     }
+    {
+        // The same rule from the other side. A commitment one byte too long
+        // carries a valid scheme byte and a valid hash, so a length test
+        // written as "shorter than 33" would let it through and the leaf
+        // script would stop having one form.
+        std::vector<unsigned char> long_commitment{static_cast<unsigned char>(pqc::Scheme::SLH_DSA_SHA2_128S)};
+        long_commitment.insert(long_commitment.end(), pubkey_hash.begin(), pubkey_hash.end());
+        long_commitment.push_back(0x00);
+        BOOST_REQUIRE_EQUAL(long_commitment.size(), 34U);
+        const CScript leaf_long = CScript() << long_commitment << OP_CHECKPQSIG;
+        const uint256 hash_long = ComputeTapleafHash(TAPROOT_LEAF_TAPSCRIPT, leaf_long);
+        const CScript spk_long = CScript() << OP_2 << ToByteVector(ComputeTapbranchHash(hash_long, hash_b));
+        CScriptWitness w;
+        w.stack = {{}, pq_pubkey, {leaf_long.begin(), leaf_long.end()}, control};
+        BOOST_CHECK(!VerifyScript(CScript(), spk_long, &w, pq_flags, checker, &err));
+        BOOST_CHECK_EQUAL(FormatScriptError(err), FormatScriptError(SCRIPT_ERR_PQSIG_SIZE));
+    }
 
     // The larger element bound follows the textual presence of the opcode,
     // not its execution: the scan runs over the whole script before any
