@@ -14,11 +14,15 @@ set against this code: key generation, verification and signing. That
 is what backs the FIPS 205 name, and pqc_acvp_ml_dsa_tests.cpp does
 the same for FIPS 204 on the verification side.
 
-dilithium/: ML-DSA-44 (FIPS 204), copied unmodified from
-libbitcoinpqc at commit 053e954534b13c1dbdc8ef4f9ae4d93bb301bab6
-(github.com/cryptoquick/libbitcoinpqc), which vendors upstream commit
-444cdcc84eb36b66fe27b3a2529ee48f6d8150c2 and pins it. Built with
-DILITHIUM_MODE=2, and only the files that build reaches are here.
+dilithium/: ML-DSA-44 (FIPS 204), copied unmodified from libbitcoinpqc
+at commit 053e954534b13c1dbdc8ef4f9ae4d93bb301bab6
+(github.com/cryptoquick/libbitcoinpqc). The upstream state it carries is
+pq-crystals/dilithium 6e00625, which is
+444cdcc84eb36b66fe27b3a2529ee48f6d8150c2 plus one commit that touches
+only the LICENSE. The sources are identical between the two; the LICENSE
+here is 6e00625's, which offers GPL 2.0 alongside CC0 and Apache 2.0.
+Built with DILITHIUM_MODE=2, and only the files that build reaches are
+here.
 Beware that reachability is not obvious from the file names when
 pruning: a header can be pulled in through a relative path from a
 parameter header rather than by name.
