@@ -2419,7 +2419,7 @@ BOOST_AUTO_TEST_CASE(script_pqsig_ml_dsa)
     // twenty-three checks; each repetition past the first adds 37 bytes of
     // leaf script (37 of budget) but costs 200, so the twenty-fourth runs
     // out. Same shape as the SLH-DSA boundary test, which pins its cost at
-    // eight against nine.
+    // eleven against twelve.
     {
         const auto spend_repeats = [&](int n) {
             CScript leaf;
