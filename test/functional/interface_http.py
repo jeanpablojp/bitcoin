@@ -6,7 +6,8 @@
 
 from test_framework.test_framework import BitcoinTestFramework
 from test_framework.netutil import NETWORK_ERRORS
-from test_framework.util import assert_equal, assert_raises, str_to_b64str
+from test_framework.test_node import ErrorMatch
+from test_framework.util import assert_equal, assert_raises, rpc_port, str_to_b64str
 
 import concurrent.futures
 import http.client
@@ -135,6 +136,7 @@ class HTTPBasicsTest (BitcoinTestFramework):
 
         self.check_default_connection()
         self.check_socket_exclusivity()
+        self.check_bind_conflicts()
         self.check_keepalive_connection()
         self.check_close_connection()
         self.check_excessive_request_size()
@@ -185,6 +187,35 @@ class HTTPBasicsTest (BitcoinTestFramework):
             assert_raises(
                 OSError,
                 lambda: competing_listener.bind((url.hostname, url.port)))
+
+
+    def check_bind_conflicts(self):
+        self.log.info("Checking that a taken RPC address stops the node from starting")
+        # Two -rpcbind entries, one of them held by something else. The node
+        # must not come up serving only the other, because requests aimed at
+        # the taken address reach whatever holds it.
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as occupied:
+            occupied.bind(('127.0.0.1', 0))
+            occupied.listen(1)
+            taken_port = occupied.getsockname()[1]
+            self.stop_node(0)
+            self.node.assert_start_raises_init_error(
+                ['-rpcallowip=127.0.0.1', f'-rpcbind=127.0.0.1:{taken_port}'],
+                f'Error: Unable to bind to 127\\.0\\.0\\.1:{taken_port} on this computer',
+                match=ErrorMatch.PARTIAL_REGEX)
+
+        self.log.info("Checking that an address under a wildcard is not a conflict")
+        # The wildcard already covers the loopback address, so the second entry
+        # is redundant rather than taken by somebody else. On platforms where
+        # that second bind fails the node still has to come up.
+        self.start_node(0, extra_args=['-rpcallowip=127.0.0.1',
+                                       f'-rpcbind=0.0.0.0:{rpc_port(0)}',
+                                       f'-rpcbind=127.0.0.1:{rpc_port(0)}'])
+        # Reaching the node over the loopback address proves it came up and is
+        # serving there, which is what not treating the second entry as a
+        # conflict has to preserve.
+        assert_equal(len(self.node.getbestblockhash()), 64)
+        self.restart_node(0)
 
 
     def check_keepalive_connection(self):

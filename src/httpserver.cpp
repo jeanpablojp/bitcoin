@@ -27,11 +27,13 @@
 #include <util/time.h>
 #include <util/translation.h>
 
+#include <algorithm>
 #include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
 #include <memory>
 #include <optional>
+#include <ranges>
 #include <span>
 #include <string>
 #include <string_view>
@@ -1335,26 +1337,46 @@ bool InitHTTPServer()
 
     // Bind HTTP server to specified addresses
     std::vector<std::pair<std::string, uint16_t>> endpoints{GetBindAddresses()};
-    bool bind_success{false};
+    std::vector<CService> bound;
     for (const auto& [address_string, port] : endpoints) {
         LogInfo("Binding RPC on address %s port %i", address_string, port);
         const std::optional<CService> addr{Lookup(address_string, port, false)};
         if (addr) {
+            // The same address given more than once binds once. Trying it
+            // again could only fail against ourselves, and reporting that as a
+            // conflict would name the wrong culprit.
+            if (std::ranges::find(bound, addr.value()) != bound.end()) {
+                LogWarning("Ignoring duplicate -rpcbind entry for %s", addr->ToStringAddrPort());
+                continue;
+            }
             if (addr->IsBindAny()) {
                 LogWarning("The RPC server is not safe to expose to untrusted networks such as the public internet");
             }
             auto result{g_http_server->BindAndStartListening(addr.value())};
             if (!result) {
+                // An address already taken means requests meant for us reach
+                // whatever holds it instead, so the node must not carry on
+                // serving only the addresses that were left. The exception is
+                // an address overlapping a wildcard already bound here, where
+                // the process holding it is this one.
+                const bool held_by_us{std::ranges::any_of(bound, [&addr](const CService& other) {
+                    return other.GetPort() == addr->GetPort() &&
+                           other.GetSAFamily() == addr->GetSAFamily() &&
+                           (other.IsBindAny() || addr->IsBindAny());
+                })};
+                if (result.error().address_in_use && !held_by_us) {
+                    return InitError(result.error().message);
+                }
                 LogWarning("Binding RPC on address %s failed: %s", addr->ToStringAddrPort(), result.error().message.original);
             } else {
-                bind_success = true;
+                bound.push_back(addr.value());
             }
         } else {
             LogWarning("Could not bind RPC on address %s port %i: Address lookup failed.", address_string, port);
         }
     }
 
-    if (!bind_success) {
+    if (bound.empty()) {
         LogError("Unable to bind any endpoint for RPC server");
         return false;
     }

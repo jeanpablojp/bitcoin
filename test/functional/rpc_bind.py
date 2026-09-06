@@ -141,6 +141,9 @@ class RPCBindTest(BitcoinTestFramework):
             # check only IPv4 localhost (explicit)
             self.run_bind_test(['127.0.0.1'], '127.0.0.1', ['127.0.0.1'],
                 [('127.0.0.1', self.defaultport)])
+            # the same address twice is bound once, not treated as a conflict
+            self.run_bind_test(['127.0.0.1'], '127.0.0.1', ['127.0.0.1', '127.0.0.1'],
+                [('127.0.0.1', self.defaultport)])
             # check only IPv4 localhost (explicit) with alternative port
             self.run_bind_test(['127.0.0.1'], '127.0.0.1:32171', ['127.0.0.1:32171'],
                 [('127.0.0.1', 32171)])
