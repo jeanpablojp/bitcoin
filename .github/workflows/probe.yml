@@ -1,9 +1,13 @@
-# Throwaway, third pass. The second one measured IPv4 on one Windows build and
-# produced the rule the fix rests on: WSAEADDRINUSE means somebody holds this
-# specific address, WSAEACCES means an exclusive wildcard covers it. This one
-# asks whether that rule survives a second Windows build and the IPv6 pair,
-# since held_by_us compares address families. Delete this branch once it has
-# reported.
+# Throwaway, fourth pass. The first three built the rule the fix rests on, that
+# WSAEACCES from bind means an exclusive wildcard covers the address. Twelve
+# cases produced it and every one of them was that. This pass spends the input
+# that would refute it instead of confirming it again: binds that fail for
+# other reasons, with nobody holding anything.
+#
+# The first case is not curiosity. The PR description promises that a -rpcbind
+# naming an address the host does not have still starts. If that reports
+# WSAEACCES on Windows, the change breaks the very case it promises to keep.
+# Delete this branch once it has reported.
 name: winsock probe
 on:
   push:
@@ -16,80 +20,44 @@ jobs:
         os: [windows-2022, windows-2025]
     runs-on: ${{ matrix.os }}
     steps:
-      - name: bind conflicts on ${{ matrix.os }}
+      - name: what else makes bind fail on ${{ matrix.os }}
         shell: python
         run: |
-          import socket, subprocess, sys
+          import ctypes, socket, sys
 
-          PORT = 34567
           EXCL = socket.SO_EXCLUSIVEADDRUSE
+          NAMES = {10013: "WSAEACCES", 10048: "WSAEADDRINUSE", 10049: "WSAEADDRNOTAVAIL",
+                   10047: "WSAEAFNOSUPPORT", 10022: "WSAEINVAL"}
 
-          HOLDER = (
-              "import socket,sys,time\n"
-              "addr,opt,port,fam=sys.argv[1],sys.argv[2],int(sys.argv[3]),sys.argv[4]\n"
-              "f=socket.AF_INET6 if fam=='6' else socket.AF_INET\n"
-              "s=socket.socket(f,socket.SOCK_STREAM)\n"
-              "if f==socket.AF_INET6: s.setsockopt(socket.IPPROTO_IPV6,socket.IPV6_V6ONLY,1)\n"
-              "if opt=='excl': s.setsockopt(socket.SOL_SOCKET,socket.SO_EXCLUSIVEADDRUSE,1)\n"
-              "if opt=='reuse': s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)\n"
-              "s.bind((addr,port))\n"
-              "s.listen(1)\n"
-              "print('ready',flush=True)\n"
-              "time.sleep(25)\n"
-          )
-
-          def make(fam):
-              # the order BindAndStartListening uses on Windows
+          def attempt(addr, port, fam="4"):
               f = socket.AF_INET6 if fam == "6" else socket.AF_INET
               s = socket.socket(f, socket.SOCK_STREAM)
               s.setsockopt(socket.SOL_SOCKET, EXCL, 1)
-              if f == socket.AF_INET6:
-                  s.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
-              return s
-
-          def why(e):
-              w = getattr(e, "winerror", None)
-              return "%-6s %s" % (w, {10048: "WSAEADDRINUSE", 10013: "WSAEACCES"}.get(w, "OUTRO ERRO"))
-
-          def one_process(first, second, fam):
-              a = make(fam)
-              a.bind((first, PORT)); a.listen(1)
-              b = make(fam)
               try:
-                  b.bind((second, PORT)); b.listen(1); out = "PASSOU"
+                  s.bind((addr, port))
+                  s.listen(1)
+                  return "PASSOU"
               except OSError as e:
-                  out = "falhou " + why(e)
+                  w = getattr(e, "winerror", None)
+                  tag = NAMES.get(w, "OUTRO")
+                  flag = "   <<< seria lido como ocupado" if w in (10013, 10048) else ""
+                  return "falhou %-6s %-18s%s" % (w, tag, flag)
               finally:
-                  b.close(); a.close()
-              return out
+                  s.close()
 
-          def two_processes(hold_addr, hold_opt, our_addr, fam):
-              p = subprocess.Popen([sys.executable, "-c", HOLDER, hold_addr, hold_opt, str(PORT), fam],
-                                   stdout=subprocess.PIPE, text=True)
-              line = p.stdout.readline() if p.stdout else ""
-              if "ready" not in line:
-                  p.kill(); p.wait(); return "HOLDER NAO SEGUROU, caso invalido"
-              s = make(fam)
-              try:
-                  s.bind((our_addr, PORT)); s.listen(1); out = "PASSOU"
-              except OSError as e:
-                  out = "falhou " + why(e)
-              finally:
-                  s.close(); p.kill(); p.wait()
-              return out
+          admin = False
+          try:
+              admin = bool(ctypes.windll.shell32.IsUserAnAdmin())
+          except Exception:
+              pass
 
           print("windows:", sys.getwindowsversion())
+          print("processo elevado:", admin)
           print("")
-          print("mesmo processo, dois sockets:")
-          for f, w, sp in (("4", "0.0.0.0", "127.0.0.1"), ("6", "::", "::1")):
-              print("  ipv%s  %-9s depois %-9s  %s" % (f, sp, sp, one_process(sp, sp, f)))
-              print("  ipv%s  %-9s depois %-9s  %s" % (f, w, sp, one_process(w, sp, f)))
-              print("  ipv%s  %-9s depois %-9s  %s" % (f, sp, w, one_process(sp, w, f)))
-          print("")
-          print("outro processo segura primeiro:")
-          for f, w, sp in (("4", "0.0.0.0", "127.0.0.1"), ("6", "::", "::1")):
-              for opt in ("plain", "reuse", "excl"):
-                  print("  ipv%s  segura %-9s %-5s -> nos %-9s  %s"
-                        % (f, sp, opt, w, two_processes(sp, opt, w, f)))
-                  print("  ipv%s  segura %-9s %-5s -> nos %-9s  %s"
-                        % (f, w, opt, sp, two_processes(w, opt, sp, f)))
+          print("ninguem segura nada, o bind falha por outra razao:")
+          print("  %-42s %s" % ("192.0.2.1 (a maquina nao tem)", attempt("192.0.2.1", 34567)))
+          print("  %-42s %s" % ("255.255.255.255 (broadcast)", attempt("255.255.255.255", 34567)))
+          print("  %-42s %s" % ("127.0.0.1 porta 80 (privilegiada)", attempt("127.0.0.1", 80)))
+          print("  %-42s %s" % ("127.0.0.1 porta 443 (privilegiada)", attempt("127.0.0.1", 443)))
+          print("  %-42s %s" % ("2001:db8::1 ipv6 que a maquina nao tem", attempt("2001:db8::1", 34567, "6")))
+          print("  %-42s %s" % ("0.0.0.0 porta livre (controlo)", attempt("0.0.0.0", 34999)))
