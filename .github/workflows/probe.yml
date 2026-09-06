@@ -1,9 +1,8 @@
-# Throwaway. Answers one question that no machine we own can answer: on real
-# Windows, does a bind to a specific address fail when a wildcard on the same
-# port is already bound by the same process with SO_EXCLUSIVEADDRUSE?
-#
-# The answer decides whether the wildcard carve-out in InitHTTPServer is
-# load-bearing or dead code. Delete this branch once it has reported.
+# Throwaway, second pass. The first one measured two sockets in one process and
+# found that wildcard-then-specific fails with WSAEACCES rather than
+# WSAEADDRINUSE, which is the error the code branches on. This one measures the
+# case the PR actually promises to catch: a different process holding the
+# address first. Delete this branch once it has reported.
 name: winsock probe
 on:
   push:
@@ -12,40 +11,60 @@ jobs:
   probe:
     runs-on: windows-latest
     steps:
-      - name: SO_EXCLUSIVEADDRUSE, wildcard against specific
+      - name: another process holds the address first
         shell: python
         run: |
-          import socket, sys
+          import socket, subprocess, sys, time
 
           PORT = 34567
-          WSAEADDRINUSE = 10048
+          EXCL = socket.SO_EXCLUSIVEADDRUSE
 
-          def sock():
-              # what BindAndStartListening does on Windows, in order
+          HOLDER = """
+import socket, sys, time
+addr, opt, port = sys.argv[1], sys.argv[2], int(sys.argv[3])
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+if opt == 'excl':
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+elif opt == 'reuse':
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.bind((addr, port))
+s.listen(1)
+print('ready', flush=True)
+time.sleep(25)
+"""
+
+          def our_bind(addr):
+              # exactly what BindAndStartListening does on Windows
               s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-              s.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
-              return s
-
-          def case(first, second):
-              a = sock()
-              a.bind((first, PORT))
-              a.listen(1)
-              b = sock()
+              s.setsockopt(socket.SOL_SOCKET, EXCL, 1)
               try:
-                  b.bind((second, PORT))
-                  out = "SECOND BIND SUCCEEDED"
+                  s.bind((addr, PORT))
+                  s.listen(1)
+                  return "BIND PASSOU  <- nada nos impede"
               except OSError as e:
-                  out = "SECOND BIND FAILED  winerror=%s  errno=%s  %s" % (
-                      getattr(e, "winerror", None), e.errno, e.strerror)
-                  if getattr(e, "winerror", None) == WSAEADDRINUSE:
-                      out += "   <- this is WSAEADDRINUSE"
+                  w = getattr(e, "winerror", None)
+                  name = {10048: "WSAEADDRINUSE", 10013: "WSAEACCES"}.get(w, "outro")
+                  return "bind falhou  winerror=%-6s %-14s %s" % (w, name, e.strerror[:44])
               finally:
-                  b.close()
-                  a.close()
-              return out
+                  s.close()
+
+          def case(label, hold_addr, hold_opt, our_addr):
+              p = subprocess.Popen([sys.executable, "-c", HOLDER, hold_addr, hold_opt, str(PORT)],
+                                   stdout=subprocess.PIPE, text=True)
+              line = p.stdout.readline() if p.stdout else ""
+              if "ready" not in line:
+                  print("%-44s HOLDER NAO SEGUROU, caso invalido" % label)
+              else:
+                  print("%-44s %s" % (label, our_bind(our_addr)))
+              p.kill(); p.wait()
 
           print("windows:", sys.getwindowsversion())
           print()
-          print("control, same address twice   :", case("127.0.0.1", "127.0.0.1"))
-          print("wildcard then specific        :", case("0.0.0.0", "127.0.0.1"))
-          print("specific then wildcard        :", case("127.0.0.1", "0.0.0.0"))
+          print("outro processo segura, nos ligamos a seguir:")
+          case("  segura 127.0.0.1 plain -> nos 127.0.0.1", "127.0.0.1", "plain", "127.0.0.1")
+          case("  segura 127.0.0.1 plain -> nos 0.0.0.0  ", "127.0.0.1", "plain", "0.0.0.0")
+          case("  segura 127.0.0.1 reuse -> nos 127.0.0.1", "127.0.0.1", "reuse", "127.0.0.1")
+          case("  segura 127.0.0.1 reuse -> nos 0.0.0.0  ", "127.0.0.1", "reuse", "0.0.0.0")
+          case("  segura 127.0.0.1 excl  -> nos 0.0.0.0  ", "127.0.0.1", "excl",  "0.0.0.0")
+          case("  segura 0.0.0.0   plain -> nos 127.0.0.1", "0.0.0.0",   "plain", "127.0.0.1")
+          case("  segura 0.0.0.0   excl  -> nos 127.0.0.1", "0.0.0.0",   "excl",  "127.0.0.1")
