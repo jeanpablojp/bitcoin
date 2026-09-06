@@ -1,17 +1,22 @@
-# Throwaway, second pass. The first one measured two sockets in one process and
-# found that wildcard-then-specific fails with WSAEACCES rather than
-# WSAEADDRINUSE, which is the error the code branches on. This one measures the
-# case the PR actually promises to catch: a different process holding the
-# address first. Delete this branch once it has reported.
+# Throwaway, third pass. The second one measured IPv4 on one Windows build and
+# produced the rule the fix rests on: WSAEADDRINUSE means somebody holds this
+# specific address, WSAEACCES means an exclusive wildcard covers it. This one
+# asks whether that rule survives a second Windows build and the IPv6 pair,
+# since held_by_us compares address families. Delete this branch once it has
+# reported.
 name: winsock probe
 on:
   push:
     branches: ['winsock-probe']
 jobs:
   probe:
-    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2022, windows-2025]
+    runs-on: ${{ matrix.os }}
     steps:
-      - name: another process holds the address first
+      - name: bind conflicts on ${{ matrix.os }}
         shell: python
         run: |
           import socket, subprocess, sys
@@ -19,13 +24,12 @@ jobs:
           PORT = 34567
           EXCL = socket.SO_EXCLUSIVEADDRUSE
 
-          # Built from escaped lines rather than a triple-quoted block: inside a
-          # YAML "run: |" every line has to stay indented, and a here-doc body
-          # at column zero closes the block and the workflow will not parse.
           HOLDER = (
               "import socket,sys,time\n"
-              "addr,opt,port=sys.argv[1],sys.argv[2],int(sys.argv[3])\n"
-              "s=socket.socket(socket.AF_INET,socket.SOCK_STREAM)\n"
+              "addr,opt,port,fam=sys.argv[1],sys.argv[2],int(sys.argv[3]),sys.argv[4]\n"
+              "f=socket.AF_INET6 if fam=='6' else socket.AF_INET\n"
+              "s=socket.socket(f,socket.SOCK_STREAM)\n"
+              "if f==socket.AF_INET6: s.setsockopt(socket.IPPROTO_IPV6,socket.IPV6_V6ONLY,1)\n"
               "if opt=='excl': s.setsockopt(socket.SOL_SOCKET,socket.SO_EXCLUSIVEADDRUSE,1)\n"
               "if opt=='reuse': s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)\n"
               "s.bind((addr,port))\n"
@@ -34,39 +38,58 @@ jobs:
               "time.sleep(25)\n"
           )
 
-          def our_bind(addr):
-              # exactly what BindAndStartListening does on Windows
-              s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+          def make(fam):
+              # the order BindAndStartListening uses on Windows
+              f = socket.AF_INET6 if fam == "6" else socket.AF_INET
+              s = socket.socket(f, socket.SOCK_STREAM)
               s.setsockopt(socket.SOL_SOCKET, EXCL, 1)
-              try:
-                  s.bind((addr, PORT))
-                  s.listen(1)
-                  return "BIND PASSOU  <- nada nos impede"
-              except OSError as e:
-                  w = getattr(e, "winerror", None)
-                  name = {10048: "WSAEADDRINUSE", 10013: "WSAEACCES"}.get(w, "outro")
-                  return "bind falhou  winerror=%-6s %-14s %s" % (w, name, e.strerror[:42])
-              finally:
-                  s.close()
+              if f == socket.AF_INET6:
+                  s.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+              return s
 
-          def case(label, hold_addr, hold_opt, our_addr):
-              p = subprocess.Popen([sys.executable, "-c", HOLDER, hold_addr, hold_opt, str(PORT)],
+          def why(e):
+              w = getattr(e, "winerror", None)
+              return "%-6s %s" % (w, {10048: "WSAEADDRINUSE", 10013: "WSAEACCES"}.get(w, "OUTRO ERRO"))
+
+          def one_process(first, second, fam):
+              a = make(fam)
+              a.bind((first, PORT)); a.listen(1)
+              b = make(fam)
+              try:
+                  b.bind((second, PORT)); b.listen(1); out = "PASSOU"
+              except OSError as e:
+                  out = "falhou " + why(e)
+              finally:
+                  b.close(); a.close()
+              return out
+
+          def two_processes(hold_addr, hold_opt, our_addr, fam):
+              p = subprocess.Popen([sys.executable, "-c", HOLDER, hold_addr, hold_opt, str(PORT), fam],
                                    stdout=subprocess.PIPE, text=True)
               line = p.stdout.readline() if p.stdout else ""
               if "ready" not in line:
-                  print("%-42s HOLDER NAO SEGUROU, caso invalido" % label)
-              else:
-                  print("%-42s %s" % (label, our_bind(our_addr)))
-              p.kill()
-              p.wait()
+                  p.kill(); p.wait(); return "HOLDER NAO SEGUROU, caso invalido"
+              s = make(fam)
+              try:
+                  s.bind((our_addr, PORT)); s.listen(1); out = "PASSOU"
+              except OSError as e:
+                  out = "falhou " + why(e)
+              finally:
+                  s.close(); p.kill(); p.wait()
+              return out
 
           print("windows:", sys.getwindowsversion())
           print("")
-          print("outro processo segura primeiro, nos ligamos a seguir:")
-          case("  segura 127.0.0.1 plain -> nos 127.0.0.1", "127.0.0.1", "plain", "127.0.0.1")
-          case("  segura 127.0.0.1 plain -> nos 0.0.0.0", "127.0.0.1", "plain", "0.0.0.0")
-          case("  segura 127.0.0.1 reuse -> nos 127.0.0.1", "127.0.0.1", "reuse", "127.0.0.1")
-          case("  segura 127.0.0.1 reuse -> nos 0.0.0.0", "127.0.0.1", "reuse", "0.0.0.0")
-          case("  segura 127.0.0.1 excl  -> nos 0.0.0.0", "127.0.0.1", "excl", "0.0.0.0")
-          case("  segura 0.0.0.0   plain -> nos 127.0.0.1", "0.0.0.0", "plain", "127.0.0.1")
-          case("  segura 0.0.0.0   excl  -> nos 127.0.0.1", "0.0.0.0", "excl", "127.0.0.1")
+          print("mesmo processo, dois sockets:")
+          for f, w, sp in (("4", "0.0.0.0", "127.0.0.1"), ("6", "::", "::1")):
+              print("  ipv%s  %-9s depois %-9s  %s" % (f, sp, sp, one_process(sp, sp, f)))
+              print("  ipv%s  %-9s depois %-9s  %s" % (f, w, sp, one_process(w, sp, f)))
+              print("  ipv%s  %-9s depois %-9s  %s" % (f, sp, w, one_process(sp, w, f)))
+          print("")
+          print("outro processo segura primeiro:")
+          for f, w, sp in (("4", "0.0.0.0", "127.0.0.1"), ("6", "::", "::1")):
+              for opt in ("plain", "reuse", "excl"):
+                  print("  ipv%s  segura %-9s %-5s -> nos %-9s  %s"
+                        % (f, sp, opt, w, two_processes(sp, opt, w, f)))
+                  print("  ipv%s  segura %-9s %-5s -> nos %-9s  %s"
+                        % (f, w, opt, sp, two_processes(w, opt, sp, f)))
