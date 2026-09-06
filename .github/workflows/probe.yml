@@ -14,24 +14,25 @@ jobs:
       - name: another process holds the address first
         shell: python
         run: |
-          import socket, subprocess, sys, time
+          import socket, subprocess, sys
 
           PORT = 34567
           EXCL = socket.SO_EXCLUSIVEADDRUSE
 
-          HOLDER = """
-import socket, sys, time
-addr, opt, port = sys.argv[1], sys.argv[2], int(sys.argv[3])
-s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-if opt == 'excl':
-    s.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
-elif opt == 'reuse':
-    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-s.bind((addr, port))
-s.listen(1)
-print('ready', flush=True)
-time.sleep(25)
-"""
+          # Built from escaped lines rather than a triple-quoted block: inside a
+          # YAML "run: |" every line has to stay indented, and a here-doc body
+          # at column zero closes the block and the workflow will not parse.
+          HOLDER = (
+              "import socket,sys,time\n"
+              "addr,opt,port=sys.argv[1],sys.argv[2],int(sys.argv[3])\n"
+              "s=socket.socket(socket.AF_INET,socket.SOCK_STREAM)\n"
+              "if opt=='excl': s.setsockopt(socket.SOL_SOCKET,socket.SO_EXCLUSIVEADDRUSE,1)\n"
+              "if opt=='reuse': s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)\n"
+              "s.bind((addr,port))\n"
+              "s.listen(1)\n"
+              "print('ready',flush=True)\n"
+              "time.sleep(25)\n"
+          )
 
           def our_bind(addr):
               # exactly what BindAndStartListening does on Windows
@@ -44,7 +45,7 @@ time.sleep(25)
               except OSError as e:
                   w = getattr(e, "winerror", None)
                   name = {10048: "WSAEADDRINUSE", 10013: "WSAEACCES"}.get(w, "outro")
-                  return "bind falhou  winerror=%-6s %-14s %s" % (w, name, e.strerror[:44])
+                  return "bind falhou  winerror=%-6s %-14s %s" % (w, name, e.strerror[:42])
               finally:
                   s.close()
 
@@ -53,18 +54,19 @@ time.sleep(25)
                                    stdout=subprocess.PIPE, text=True)
               line = p.stdout.readline() if p.stdout else ""
               if "ready" not in line:
-                  print("%-44s HOLDER NAO SEGUROU, caso invalido" % label)
+                  print("%-42s HOLDER NAO SEGUROU, caso invalido" % label)
               else:
-                  print("%-44s %s" % (label, our_bind(our_addr)))
-              p.kill(); p.wait()
+                  print("%-42s %s" % (label, our_bind(our_addr)))
+              p.kill()
+              p.wait()
 
           print("windows:", sys.getwindowsversion())
-          print()
-          print("outro processo segura, nos ligamos a seguir:")
+          print("")
+          print("outro processo segura primeiro, nos ligamos a seguir:")
           case("  segura 127.0.0.1 plain -> nos 127.0.0.1", "127.0.0.1", "plain", "127.0.0.1")
-          case("  segura 127.0.0.1 plain -> nos 0.0.0.0  ", "127.0.0.1", "plain", "0.0.0.0")
+          case("  segura 127.0.0.1 plain -> nos 0.0.0.0", "127.0.0.1", "plain", "0.0.0.0")
           case("  segura 127.0.0.1 reuse -> nos 127.0.0.1", "127.0.0.1", "reuse", "127.0.0.1")
-          case("  segura 127.0.0.1 reuse -> nos 0.0.0.0  ", "127.0.0.1", "reuse", "0.0.0.0")
-          case("  segura 127.0.0.1 excl  -> nos 0.0.0.0  ", "127.0.0.1", "excl",  "0.0.0.0")
-          case("  segura 0.0.0.0   plain -> nos 127.0.0.1", "0.0.0.0",   "plain", "127.0.0.1")
-          case("  segura 0.0.0.0   excl  -> nos 127.0.0.1", "0.0.0.0",   "excl",  "127.0.0.1")
+          case("  segura 127.0.0.1 reuse -> nos 0.0.0.0", "127.0.0.1", "reuse", "0.0.0.0")
+          case("  segura 127.0.0.1 excl  -> nos 0.0.0.0", "127.0.0.1", "excl", "0.0.0.0")
+          case("  segura 0.0.0.0   plain -> nos 127.0.0.1", "0.0.0.0", "plain", "127.0.0.1")
+          case("  segura 0.0.0.0   excl  -> nos 127.0.0.1", "0.0.0.0", "excl", "127.0.0.1")
