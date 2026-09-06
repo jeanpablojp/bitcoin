@@ -800,7 +800,7 @@ BOOST_AUTO_TEST_CASE(http_server_socket_tests)
         CService onion_address{Lookup("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaam2dqd.onion", /*portDefault=*/0, /*fAllowLookup=*/false).value()};
         auto result{server.BindAndStartListening(onion_address)};
         BOOST_REQUIRE(!result);
-        BOOST_CHECK_EQUAL(result.error(), "Bind address family for aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaam2dqd.onion:0 not supported");
+        BOOST_CHECK_EQUAL(result.error().message.original, "Bind address family for aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaam2dqd.onion:0 not supported");
     }
 
     // This VALID address won't actually get used because we stubbed CreateSock()

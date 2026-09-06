@@ -705,21 +705,21 @@ void HTTPRequest::WriteHeader(std::string&& hdr, std::string&& value)
     m_response_headers.Write(std::move(hdr), std::move(value));
 }
 
-util::Expected<void, std::string> HTTPServer::BindAndStartListening(const CService& to)
+util::Expected<void, BindError> HTTPServer::BindAndStartListening(const CService& to)
 {
     // Create socket for listening for incoming connections
     sockaddr_storage storage;
     auto sa = reinterpret_cast<sockaddr*>(&storage);
     socklen_t len{sizeof(storage)};
     if (!to.GetSockAddr(sa, &len)) {
-        return util::Unexpected{strprintf("Bind address family for %s not supported", to.ToStringAddrPort())};
+        return util::Unexpected{BindError{Untranslated(strprintf("Bind address family for %s not supported", to.ToStringAddrPort()))}};
     }
 
     std::unique_ptr<Sock> sock{CreateSock(to.GetSAFamily(), SOCK_STREAM, IPPROTO_TCP)};
     if (!sock) {
-        return util::Unexpected{strprintf("Cannot create %s listen socket: %s",
-                                          to.ToStringAddrPort(),
-                                          NetworkErrorString(WSAGetLastError()))};
+        return util::Unexpected{BindError{Untranslated(strprintf("Cannot create %s listen socket: %s",
+                                                                 to.ToStringAddrPort(),
+                                                                 NetworkErrorString(WSAGetLastError())))}};
     }
 
 #ifdef WIN32
@@ -728,9 +728,9 @@ util::Expected<void, std::string> HTTPServer::BindAndStartListening(const CServi
     // SO_REUSEADDR on Windows is non-exclusive so another process could bind to
     // the same port.
     if (sock->SetSockOpt(SOL_SOCKET, SO_EXCLUSIVEADDRUSE, &SOCKET_OPTION_TRUE, sizeof(SOCKET_OPTION_TRUE)) == SOCKET_ERROR) {
-        return util::Unexpected{strprintf("Cannot set SO_EXCLUSIVEADDRUSE on %s listen socket: %s",
-                                          to.ToStringAddrPort(),
-                                          NetworkErrorString(WSAGetLastError()))};
+        return util::Unexpected{BindError{Untranslated(strprintf("Cannot set SO_EXCLUSIVEADDRUSE on %s listen socket: %s",
+                                                                 to.ToStringAddrPort(),
+                                                                 NetworkErrorString(WSAGetLastError())))}};
     }
 #else
     // Allow binding if the port is still in TIME_WAIT state after
@@ -771,21 +771,22 @@ util::Expected<void, std::string> HTTPServer::BindAndStartListening(const CServi
     if (sock->Bind(sa, len) == SOCKET_ERROR) {
         const int err{WSAGetLastError()};
         if (err == WSAEADDRINUSE) {
-            return util::Unexpected{strprintf("Unable to bind to %s on this computer. %s is probably already running.",
-                                              to.ToStringAddrPort(),
-                                              CLIENT_NAME)};
+            return util::Unexpected{BindError{strprintf(_("Unable to bind to %s on this computer. %s is probably already running."),
+                                                          to.ToStringAddrPort(),
+                                                          CLIENT_NAME),
+                                              /*address_in_use=*/true}};
         } else {
-            return util::Unexpected{strprintf("Unable to bind to %s on this computer (bind returned error %s)",
-                                              to.ToStringAddrPort(),
-                                              NetworkErrorString(err))};
+            return util::Unexpected{BindError{Untranslated(strprintf("Unable to bind to %s on this computer (bind returned error %s)",
+                                                                     to.ToStringAddrPort(),
+                                                                     NetworkErrorString(err)))}};
         }
     }
 
     // Listen for incoming connections
     if (sock->Listen(SOMAXCONN) == SOCKET_ERROR) {
-        return util::Unexpected{strprintf("Cannot listen on %s: %s",
-                                          to.ToStringAddrPort(),
-                                          NetworkErrorString(WSAGetLastError()))};
+        return util::Unexpected{BindError{Untranslated(strprintf("Cannot listen on %s: %s",
+                                                                 to.ToStringAddrPort(),
+                                                                 NetworkErrorString(WSAGetLastError())))}};
     }
 
     m_listen.emplace_back(std::move(sock));
@@ -1344,7 +1345,7 @@ bool InitHTTPServer()
             }
             auto result{g_http_server->BindAndStartListening(addr.value())};
             if (!result) {
-                LogWarning("Binding RPC on address %s failed: %s", addr->ToStringAddrPort(), result.error());
+                LogWarning("Binding RPC on address %s failed: %s", addr->ToStringAddrPort(), result.error().message.original);
             } else {
                 bind_success = true;
             }

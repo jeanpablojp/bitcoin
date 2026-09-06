@@ -23,6 +23,7 @@
 #include <util/string.h>
 #include <util/threadinterrupt.h>
 #include <util/time.h>
+#include <util/translation.h>
 
 namespace util {
 class SignalInterrupt;
@@ -226,6 +227,13 @@ private:
     State m_state = State::Init;
 };
 
+struct BindError {
+    bilingual_str message;
+    //! Set when the bind failed because something else already holds
+    //! this address and port, as opposed to the host not having it.
+    bool address_in_use{false};
+};
+
 class HTTPServer
 {
 public:
@@ -252,9 +260,10 @@ public:
     /**
      * Bind to a new address:port, start listening and add the listen socket to `m_listen`.
      * @param[in] to Where to bind.
-     * @returns {} or the reason for failure.
+     * @returns {} or the reason for failure, and whether it failed
+     *          because the address was already in use.
      */
-    util::Expected<void, std::string> BindAndStartListening(const CService& to);
+    util::Expected<void, BindError> BindAndStartListening(const CService& to);
 
     /**
      * Stop listening by closing all listening sockets.
