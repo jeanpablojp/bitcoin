@@ -19,6 +19,9 @@ each other:
  - p2mr_different_version_leaves: spent through its 0xfa leaf, which is
    an unknown leaf version and therefore unencumbered.
 
+A second transaction signs with the five hash types the first one does
+not use: SIGHASH_NONE, SIGHASH_SINGLE and the three ANYONECANPAY forms.
+
 Usage: test/functional/tool_p2mr_spend_vectors.py [output.json]
 """
 
@@ -56,6 +59,9 @@ from test_framework.script import (
 
 SIGHASH_DEFAULT = 0
 SIGHASH_ALL = 1
+SIGHASH_NONE = 2
+SIGHASH_SINGLE = 3
+SIGHASH_ANYONECANPAY = 0x80
 
 
 def sha256(b):
@@ -148,12 +154,16 @@ def load_construction_vector(vector_id):
     raise KeyError(vector_id)
 
 
-def build_tx(n_inputs, outputs):
+def build_tx(n_inputs, outputs, first=0, sequences=None):
+    # Input i spends prevout first + i, at the output index of that number.
+    if sequences is None:
+        sequences = [0xfffffffd] * n_inputs
     tx = CTransaction()
     tx.version = 2
     tx.nLockTime = 0
-    tx.vin = [CTxIn(COutPoint(uint256_from_str(prevout_txid(i)), i), b"",
-                    0xfffffffd) for i in range(n_inputs)]
+    tx.vin = [CTxIn(COutPoint(uint256_from_str(prevout_txid(first + i)),
+                              first + i), b"", sequences[i])
+              for i in range(n_inputs)]
     tx.vout = [CTxOut(amount, script) for amount, script in outputs]
     tx.wit.vtxinwit = [CTxInWitness() for _ in range(n_inputs)]
     return tx
@@ -197,7 +207,9 @@ def main():
     assert (t_mixed.control_block(1).hex()
             == mixed_vec["expected"]["scriptPathControlBlocks"][1])
 
-    # ---- the valid spending group: one tx, five inputs --------------------
+    # ---- the valid spending groups -----------------------------------------
+    # The first: one tx, six inputs. The four that sign use SIGHASH_DEFAULT
+    # or SIGHASH_ALL.
     spends = [
         # (tree, tree_json, leaf_id, key or None, hash_type, annex, comment)
         (t_two, two_leaf, 0, key[0], SIGHASH_DEFAULT, None,
@@ -219,71 +231,117 @@ def main():
          "1 + 32*128 bytes"),
     ]
 
-    utxos = [(100000 + 1000 * i, s[0].script_pubkey)
-             for i, s in enumerate(spends)]
-    out_spk = CScript(bytes.fromhex("0014") + sha256(b"p2mr_spending/out/0")[:20])
-    tx = build_tx(len(spends), [(sum(u[0] for u in utxos) - 10000, out_spk)])
-    raw_unsigned = tx.serialize_without_witness().hex()
-    spent = [CTxOut(amount, spk) for amount, spk in utxos]
+    # The second: one tx, five inputs, one per hash type the first does not
+    # use, in the order of BIP 341's key path vectors. SINGLE|ANYONECANPAY
+    # sits at input 1, where it signs output 1 rather than output 0, and
+    # every input has its own nSequence, so the ANYONECANPAY forms commit to
+    # a value no other input shares. The leaves are the five checksig leaves
+    # of the two-leaf and three-leaf trees.
+    hash_type_spends = [
+        (t_two, two_leaf, 0, key[0], SIGHASH_SINGLE, None,
+         "two-leaf tree, depth-1 leaf, SIGHASH_SINGLE: commits to output 0, "
+         "the one at its own index"),
+        (t_three, three_leaf, 1, key[3], SIGHASH_SINGLE | SIGHASH_ANYONECANPAY,
+         None,
+         "three-leaf tree, depth-2 leaf, SIGHASH_SINGLE|ANYONECANPAY: "
+         "commits to output 1 and to this input alone"),
+        (t_two, two_leaf, 1, key[1], SIGHASH_NONE, None,
+         "two-leaf tree, depth-1 leaf, SIGHASH_NONE: commits to no output"),
+        (t_three, three_leaf, 0, key[2], SIGHASH_NONE | SIGHASH_ANYONECANPAY,
+         None,
+         "three-leaf tree, depth-1 leaf, SIGHASH_NONE|ANYONECANPAY: commits "
+         "to this input alone and to no output"),
+        (t_three, three_leaf, 2, key[0], SIGHASH_ALL | SIGHASH_ANYONECANPAY,
+         None,
+         "three-leaf tree, depth-2 leaf, SIGHASH_ALL|ANYONECANPAY: commits "
+         "to every output and to this input alone"),
+    ]
 
-    input_vectors = []
-    for i, (tree, tree_json, leaf_id, k, hash_type, annex, comment) in enumerate(spends):
-        script, version = tree.leaf_script(leaf_id)
-        control = tree.control_block(leaf_id)
-        intermediary = {
-            "leafHash": tapleaf_hash(script, version).hex(),
-            "merkleRoot": tree.merkle_root.hex(),
-            "controlBlock": control.hex(),
-            "sigMsg": None,
-            "sigHash": None,
-        }
-        witness = []
-        if k is not None:
-            msg = TaprootSignatureMsg(tx, spent, hash_type, i, scriptpath=True,
-                                      leaf_script=script, leaf_ver=version,
-                                      annex=annex,
-                                      codeseparator_pos=0xFFFFFFFF)
-            sighash = TaggedHash("TapSighash", msg)
-            sig = sign_schnorr(k, sighash)
-            if hash_type != SIGHASH_DEFAULT:
-                sig += bytes([hash_type])
-            intermediary["sigMsg"] = msg.hex()
-            intermediary["sigHash"] = sighash.hex()
-            witness.append(sig)
-        witness += [script, control]
-        if annex is not None:
-            witness.append(annex)
-        tx.wit.vtxinwit[i].scriptWitness.stack = witness
-        input_vectors.append({
+    def out_script(n):
+        return CScript(bytes.fromhex("0014")
+                       + sha256(f"p2mr_spending/out/{n}".encode())[:20])
+
+    out_spk = out_script(0)
+
+    def spending_group(spends, first, n_outputs, sequences=None):
+        # One tx spending prevouts first, first + 1, ...: the fee is 10000
+        # and the outputs share the rest, the last one taking the remainder.
+        utxos = [(100000 + 1000 * (first + i), s[0].script_pubkey)
+                 for i, s in enumerate(spends)]
+        left = sum(u[0] for u in utxos) - 10000
+        share = left // n_outputs
+        outputs = [(share, out_script(n)) for n in range(n_outputs - 1)]
+        outputs.append((left - share * (n_outputs - 1),
+                        out_script(n_outputs - 1)))
+        tx = build_tx(len(spends), outputs, first, sequences)
+        raw_unsigned = tx.serialize_without_witness().hex()
+        spent = [CTxOut(amount, spk) for amount, spk in utxos]
+
+        input_vectors = []
+        for i, (tree, tree_json, leaf_id, k, hash_type, annex, comment) in enumerate(spends):
+            script, version = tree.leaf_script(leaf_id)
+            control = tree.control_block(leaf_id)
+            intermediary = {
+                "leafHash": tapleaf_hash(script, version).hex(),
+                "merkleRoot": tree.merkle_root.hex(),
+                "controlBlock": control.hex(),
+                "sigMsg": None,
+                "sigHash": None,
+            }
+            witness = []
+            if k is not None:
+                msg = TaprootSignatureMsg(tx, spent, hash_type, i, scriptpath=True,
+                                          leaf_script=script, leaf_ver=version,
+                                          annex=annex,
+                                          codeseparator_pos=0xFFFFFFFF)
+                sighash = TaggedHash("TapSighash", msg)
+                sig = sign_schnorr(k, sighash)
+                if hash_type != SIGHASH_DEFAULT:
+                    sig += bytes([hash_type])
+                intermediary["sigMsg"] = msg.hex()
+                intermediary["sigHash"] = sighash.hex()
+                witness.append(sig)
+            witness += [script, control]
+            if annex is not None:
+                witness.append(annex)
+            tx.wit.vtxinwit[i].scriptWitness.stack = witness
+            input_vectors.append({
+                "given": {
+                    "txinIndex": i,
+                    "scriptTree": tree_json,
+                    "leafId": leaf_id,
+                    "privkey": k.hex() if k else None,
+                    "hashType": hash_type,
+                    "annex": annex.hex() if annex else None,
+                },
+                "intermediary": intermediary,
+                "expected": {"witness": [w.hex() for w in witness]},
+                "comment": comment,
+            })
+
+        return {
             "given": {
-                "txinIndex": i,
-                "scriptTree": tree_json,
-                "leafId": leaf_id,
-                "privkey": k.hex() if k else None,
-                "hashType": hash_type,
-                "annex": annex.hex() if annex else None,
+                "rawUnsignedTx": raw_unsigned,
+                "utxosSpent": [{"scriptPubKey": spk.hex(), "amountSats": amount}
+                               for amount, spk in utxos],
             },
-            "intermediary": intermediary,
-            "expected": {"witness": [w.hex() for w in witness]},
-            "comment": comment,
-        })
+            "intermediary": {
+                "hashAmounts": BIP341_sha_amounts(spent).hex(),
+                "hashOutputs": BIP341_sha_outputs(tx).hex(),
+                "hashPrevouts": BIP341_sha_prevouts(tx).hex(),
+                "hashScriptPubkeys": BIP341_sha_scriptpubkeys(spent).hex(),
+                "hashSequences": BIP341_sha_sequences(tx).hex(),
+            },
+            "inputSpending": input_vectors,
+            "auxiliary": {"fullySignedTx": tx.serialize().hex()},
+        }
 
-    valid_group = {
-        "given": {
-            "rawUnsignedTx": raw_unsigned,
-            "utxosSpent": [{"scriptPubKey": spk.hex(), "amountSats": amount}
-                           for amount, spk in utxos],
-        },
-        "intermediary": {
-            "hashAmounts": BIP341_sha_amounts(spent).hex(),
-            "hashOutputs": BIP341_sha_outputs(tx).hex(),
-            "hashPrevouts": BIP341_sha_prevouts(tx).hex(),
-            "hashScriptPubkeys": BIP341_sha_scriptpubkeys(spent).hex(),
-            "hashSequences": BIP341_sha_sequences(tx).hex(),
-        },
-        "inputSpending": input_vectors,
-        "auxiliary": {"fullySignedTx": tx.serialize().hex()},
-    }
+    valid_groups = [
+        spending_group(spends, 0, 1),
+        spending_group(hash_type_spends, len(spends), 2,
+                       [0xffffffff, 0xfffffffe, 0xfffffffd, 0xfffffffc,
+                        0xfffffffb]),
+    ]
 
     # ---- invalid spends: one single-input tx each -------------------------
     invalid = []
@@ -364,19 +422,36 @@ def main():
                  "invalid control block size",
                  "control block length must be 1 + 32*m: 34 bytes is not")
 
+    # 0x80 alone is ANYONECANPAY with no output type, which BIP 341 does not
+    # define. The signature is over the message the BIP 341 rules would
+    # build for it, so nothing but the hash type check can reject it.
+    msg = TaprootSignatureMsg(base_tx, base_spent, SIGHASH_ANYONECANPAY, 0,
+                              scriptpath=True, leaf_script=script,
+                              leaf_ver=version,
+                              codeseparator_pos=0xFFFFFFFF)
+    sig_0x80 = (sign_schnorr(key[0], TaggedHash("TapSighash", msg))
+                + bytes([SIGHASH_ANYONECANPAY]))
+    invalid_case("p2mr_spend_undefined_hash_type", t_two,
+                 [sig_0x80, script, control],
+                 "invalid hash type",
+                 "0x80 is not a defined hash type; signed over the message "
+                 "BIP 341 would build for it, so only the hash type check "
+                 "rejects it")
+
     # ---- write ------------------------------------------------------------
     doc = {
         "version": 1,
         "comment": "BIP 360 P2MR spend-path test vectors. Deterministic: "
                    "privkeys are sha256('p2mr_spending/key/<n>'), prevout "
                    "txids sha256('p2mr_spending/prevout/<n>'), BIP 340 "
-                   "signing with all-zero aux. The trees for txinIndex 3 "
-                   "and 4 are p2mr_single_leaf_script_tree and "
+                   "signing with all-zero aux. In the first group, the "
+                   "trees for txinIndex 3 and 4 are "
+                   "p2mr_single_leaf_script_tree and "
                    "p2mr_different_version_leaves from "
                    "p2mr_construction.json. For inputs spent without a "
                    "signature, privkey/hashType/annex/sigMsg/sigHash are "
                    "null.",
-        "scriptPathSpending": [valid_group],
+        "scriptPathSpending": valid_groups,
         "invalidSpending": invalid,
     }
     with open(out_path, "w") as f:

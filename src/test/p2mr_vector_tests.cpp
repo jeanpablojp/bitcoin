@@ -180,6 +180,7 @@ BOOST_AUTO_TEST_CASE(p2mr_spending)
     // ---- valid spends ----------------------------------------------------
     const UniValue& groups{root["scriptPathSpending"]};
     BOOST_REQUIRE(groups.isArray());
+    BOOST_REQUIRE_EQUAL(groups.size(), 2U);
     for (size_t gi{0}; gi < groups.size(); ++gi) {
         const UniValue& group{groups[gi]};
         const CMutableTransaction mtx{decode_tx(group["auxiliary"]["fullySignedTx"].get_str())};
@@ -255,7 +256,8 @@ BOOST_AUTO_TEST_CASE(p2mr_spending)
                 TransactionSignatureChecker(&tx, idx, spent[idx].nValue, txdata,
                                             MissingDataBehavior::ASSERT_FAIL),
                 &serror)};
-            BOOST_CHECK_MESSAGE(ok, "input " + util::ToString(idx) + ": " +
+            BOOST_CHECK_MESSAGE(ok, "group " + util::ToString(gi) + " input " +
+                                        util::ToString(idx) + ": " +
                                         ScriptErrorString(serror));
         }
     }
@@ -272,11 +274,12 @@ BOOST_AUTO_TEST_CASE(p2mr_spending)
         {"annex with fewer than two remaining witness elements", SCRIPT_ERR_WITNESS_PROGRAM_MISMATCH},
         {"invalid control block size", SCRIPT_ERR_TAPROOT_WRONG_CONTROL_SIZE},
         {"empty witness", SCRIPT_ERR_WITNESS_PROGRAM_WITNESS_EMPTY},
+        {"invalid hash type", SCRIPT_ERR_SCHNORR_SIG_HASHTYPE},
     };
 
     const UniValue& invalid{root["invalidSpending"]};
     BOOST_REQUIRE(invalid.isArray());
-    BOOST_REQUIRE_EQUAL(invalid.size(), 9U);
+    BOOST_REQUIRE_EQUAL(invalid.size(), 10U);
     for (size_t i{0}; i < invalid.size(); ++i) {
         const UniValue& tv{invalid[i]};
         const std::string id{tv["id"].get_str()};
