@@ -66,6 +66,10 @@ def parse_library_deps(md_path):
     deps = defaultdict(set)
     for line in m.group(1).splitlines():
         edge = re.match(r"\s*(libbitcoin\w+)\s*-->\s*(libbitcoin\w+)\s*;", line)
+        # Fail on a library line the regex does not understand, so that no
+        # edge, and no library, is dropped from the check silently.
+        if not edge and re.match(r"\s*libbitcoin\w+\s*-", line):
+            sys.exit(f"Error: could not parse graph line {line.strip()!r} in {md_path}")
         if edge:
             consumer = edge.group(1).removeprefix("lib")
             provider = edge.group(2).removeprefix("lib")
@@ -198,6 +202,12 @@ def main():
 
     if missing:
         sys.exit(f"Error: libraries not found in {lib_dir}: {', '.join(missing)}")
+
+    # An archive with no symbols read means the nm output was not understood,
+    # and checking it would pass silently.
+    empty = [name for name, data in libs.items() if not data["defined"]]
+    if empty:
+        sys.exit(f"Error: no symbols read from: {', '.join(empty)}")
 
     # Compute actual dependencies (with self-symbol subtraction)
     actual_deps = defaultdict(dict)
